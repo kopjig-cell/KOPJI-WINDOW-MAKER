@@ -507,11 +507,20 @@ module Kopji
         mark_paraframe!(instance, :window)
         model.commit_operation
 
+        # -- engine introspection (console only) ----------------------------
+        # Prints the DC engine's actual class and public API in THIS build,
+        # so we can see what redraw entry points really exist.
+        dcs = $dc_observers.get_latest_class
+        puts "[ParaFrame] DC engine: #{dcs.class}"
+        puts "[ParaFrame] engine methods: #{dcs.public_methods(false).sort.join(', ')}"
+        puts "[ParaFrame] $dc_observers methods: " \
+             "#{$dc_observers.public_methods(false).sort.join(', ')}"
+
         # -- exercise the bridge -------------------------------------------
         set_attr(instance, :LenX, 20.0) # mixed case on purpose → "lenx"
         ok_redraw = redraw(instance)    # own undo step (user-level action)
 
-        pass.call('DC redraw ran', ok_redraw)
+        pass.call('redraw_with_undo ran', ok_redraw)
         pass.call('instance override read back',
                   get_attr(instance, :lenx) == 20.0,
                   "lenx=#{get_attr(instance, :lenx).inspect}")
@@ -521,10 +530,24 @@ module Kopji
         bounds = instance.bounds
         width = bounds.width
         child_lenx = child.valid? ? get_attr(child, :lenx) : nil
-        pass.call('formula-driven child resized (child lenx = parent!lenx)',
+        pass.call('resized right after redraw_with_undo',
                   (width - 20.0).abs < 0.001,
                   "bounds=#{bounds.width.round(3)}x#{bounds.height.round(3)}x" \
                   "#{bounds.depth.round(3)}\", child lenx=#{child_lenx.inspect}")
+
+        # Fallback probe: some builds may no-op redraw_with_undo for
+        # programmatically built DCs — try the plain redraw entry too.
+        if (width - 20.0).abs >= 0.001 && dcs.respond_to?(:redraw)
+          begin
+            dcs.redraw(instance)
+            w2 = instance.bounds.width
+            pass.call('plain dcs.redraw applied',
+                      (w2 - 20.0).abs < 0.001, "w=#{w2.round(3)}\"")
+          rescue StandardError => e
+            pass.call('plain dcs.redraw applied', false, "#{e.class}: #{e.message}")
+          end
+        end
+
         pass.call('definition default fallback',
                   get_attr(instance, :sillheight) == 35.0)
         pass.call('ParaFrame marker', paraframe_type(instance) == 'window')
@@ -536,20 +559,44 @@ module Kopji
                   (from_display(to_display(47.244, model), model) - 47.244).abs < 1e-9,
                   "model units: #{model_unit_name(model)}")
 
-        # -- clean up -------------------------------------------------------
-        model.start_operation('ParaFrame Self-Test (cleanup)', true)
-        instance.erase! if instance.valid?
-        if model.definitions.respond_to?(:remove)
-          model.definitions.remove(parent_defn) if parent_defn.valid?
-          model.definitions.remove(child_defn) if child_defn.valid?
-        end
-        model.commit_operation
-
         all_ok = checks.none? { |line| line.start_with?('FAIL') }
-        summary = "ParaFrame DC bridge self-test: #{all_ok ? 'ALL PASS' : 'FAILURES'}\n\n" +
-                  checks.join("\n")
+        summary = "ParaFrame DC bridge self-test (immediate): " \
+                  "#{all_ok ? 'ALL PASS' : 'FAILURES'}\n\n#{checks.join("\n")}" \
+                  "\n\nA second messagebox follows in ~2 s with the deferred " \
+                  're-measure.'
         puts "[ParaFrame] #{summary}"
         UI.messagebox(summary)
+
+        # -- deferred re-measure + cleanup -----------------------------------
+        # If the engine applies geometry asynchronously (via its own timer/
+        # observer queue), the immediate measurement above is too early.
+        # Re-measure well after this call stack unwinds, then clean up.
+        UI.start_timer(2.0, false) do
+          begin
+            late_width = instance.valid? ? instance.bounds.width : -1.0
+            late_child = child.valid? ? get_attr(child, :lenx) : nil
+            deferred_hit = (late_width - 20.0).abs < 0.001
+            late_msg = "ParaFrame deferred re-measure (2 s later):\n" \
+                       "bounds.width=#{late_width.round(3)}\", " \
+                       "child lenx=#{late_child.inspect}\n\n" +
+                       (deferred_hit ?
+                         'RESIZED — the DC engine applies redraws ' \
+                         'asynchronously; the bridge works.' :
+                         'Still unresized — the engine is not applying our ' \
+                         'attributes at all.')
+            puts "[ParaFrame] #{late_msg}"
+            model.start_operation('ParaFrame Self-Test (cleanup)', true)
+            instance.erase! if instance.valid?
+            if model.definitions.respond_to?(:remove)
+              model.definitions.remove(parent_defn) if parent_defn.valid?
+              model.definitions.remove(child_defn) if child_defn.valid?
+            end
+            model.commit_operation
+            UI.messagebox(late_msg)
+          rescue StandardError => e
+            puts "[ParaFrame] deferred check failed: #{e.class}: #{e.message}"
+          end
+        end
         all_ok
       rescue StandardError => e
         model.abort_operation rescue nil
