@@ -17,7 +17,7 @@ module Kopji
 
     # Single source of truth for the version. build/package.rb reads and
     # bumps this string, so keep the `VERSION = '…'` line machine-parseable.
-    VERSION = '0.2.7'
+    VERSION = '0.2.8'
 
     # SketchUp 2021 ships Ruby 2.7 and reports version "21.x".
     MINIMUM_SKETCHUP_VERSION = 21

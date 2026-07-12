@@ -491,8 +491,18 @@ module Kopji
           dcs.redraw(instance)
           lines << "after plain redraw: width #{instance.bounds.width.round(3)}\""
         end
-
         changed = (instance.bounds.width - before_w).abs > 0.001
+
+        # Live-value cross-check: scale the geometry itself (what the
+        # Scale tool / Options dialog do), then redraw — do the children
+        # follow now?
+        unless changed
+          scale = Geom::Transformation.scaling(instance.bounds.min, 2.0, 1.0, 1.0)
+          model.active_entities.transform_entities(scale, instance)
+          dcs.redraw(instance)
+          lines << "after LIVE scale x2 + redraw: width #{instance.bounds.width.round(3)}\" " \
+                   '(check visually whether internals re-arranged, then Ctrl+Z)'
+        end
         verdict = changed ? 'CHANGED — our call sequence works on real DCs.' :
                             'unchanged — even a dialog-authored DC ignores our sequence.'
         msg = "ParaFrame probe on '#{definition_of(instance)&.name}':\n\n" \
@@ -547,114 +557,127 @@ module Kopji
         end
 
         # -- build ----------------------------------------------------------
+        # Byte-level replication of a dialog-authored DC as dumped from
+        # SketchUp 2025: user inputs are STRINGS of inch-numbers, evaluated
+        # results are Floats, the child formula lives on the child
+        # DEFINITION only and references the parent BY NAME, the child
+        # carries _hasbehaviors=1.0 on instance AND definition, the parent
+        # definition carries _len*_nominal bookkeeping.
         model.start_operation('ParaFrame Self-Test (build)', true)
-        child_defn = model.definitions.add('ParaFrame Self-Test Child')
+        child_defn = model.definitions.add('PFSelfTestChild')
         face = child_defn.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
         # add_face on the ground plane usually faces down (-Z); push-pull
         # along the normal so the cube always grows upward.
         face.pushpull(face.normal.z > 0 ? 1 : -1)
-        parent_defn = model.definitions.add('ParaFrame Self-Test')
+        parent_defn = model.definitions.add('PFSelfTestParent')
         child = parent_defn.entities.add_instance(child_defn, Geom::Transformation.new)
-        child.name = 'TestChild'
         instance = model.active_entities.add_instance(parent_defn, Geom::Transformation.new)
         mark_paraframe!(instance, :window)
 
-        # Phase A layout, copied from a real dialog-authored dump:
-        # values as plain-number STRINGS, stamps on every dictionary.
         stamp = lambda do |entity, name|
-          entity.set_attribute(DICT_DC, '_formatversion', 1.0)
           entity.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
           entity.set_attribute(DICT_DC, '_name', name)
           entity.set_attribute(DICT_DC, '_has_movetool_behaviors', 0.0)
-          entity.set_attribute(DICT_DC, '_lastmodified',
-                               Time.now.strftime('%Y-%m-%d %H:%M'))
         end
-        stamp.call(parent_defn, 'PFSelfTest')
-        stamp.call(instance, 'PFSelfTest')
-        parent_defn.set_attribute(DICT_DC, 'lenx', '10.0')
+
+        # Parent definition — input lenx as STRING + nominal bookkeeping.
+        stamp.call(parent_defn, parent_defn.name)
+        parent_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
+        parent_defn.set_attribute(DICT_DC, '_lastmodified',
+                                  Time.now.strftime('%Y-%m-%d %H:%M'))
         parent_defn.set_attribute(DICT_DC, '_lenx_label', 'LenX')
+        parent_defn.set_attribute(DICT_DC, 'lenx', '20.0')
+        parent_defn.set_attribute(DICT_DC, '_lenx_nominal', 1.0)
+        parent_defn.set_attribute(DICT_DC, '_leny_nominal', 1.0)
+        parent_defn.set_attribute(DICT_DC, '_lenz_nominal', 1.0)
         # sillheight only on the definition — proves instance→definition
         # fallback further down.
         parent_defn.set_attribute(DICT_DC, 'sillheight', 35.0)
-        labels = { 'lenx' => 'LenX', 'leny' => 'LenY', 'lenz' => 'LenZ' }
-        [child, child_defn].each do |t|
-          stamp.call(t, 'TestChild')
-          { 'lenx' => '1.0', 'leny' => '10.0', 'lenz' => '10.0' }.each do |k, v|
-            t.set_attribute(DICT_DC, k, v)
-            t.set_attribute(DICT_DC, "_#{k}_label", labels[k])
-          end
-          t.set_attribute(DICT_DC, '_lenx_formula', 'parent!lenx')
-        end
+
+        # Parent instance — mirrors the input (dump shows NO _hasbehaviors
+        # on the parent).
+        stamp.call(instance, parent_defn.name)
+        instance.set_attribute(DICT_DC, 'lenx', '20.0')
+
+        # Child definition — formula by parent NAME, dialog-case reference.
+        formula = "#{parent_defn.name}!LenX"
+        stamp.call(child_defn, child_defn.name)
+        child_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
+        child_defn.set_attribute(DICT_DC, '_hasbehaviors', 1.0)
+        child_defn.set_attribute(DICT_DC, '_lastmodified',
+                                 Time.now.strftime('%Y-%m-%d %H:%M'))
+        child_defn.set_attribute(DICT_DC, '_lenx_label', 'LenX')
+        child_defn.set_attribute(DICT_DC, '_lenx_formula', formula)
+        child_defn.set_attribute(DICT_DC, 'lenx', 1.0)
+        child_defn.set_attribute(DICT_DC, '_leny_label', 'LenY')
+        child_defn.set_attribute(DICT_DC, 'leny', '10.0')
+        child_defn.set_attribute(DICT_DC, '_lenz_label', 'LenZ')
+        child_defn.set_attribute(DICT_DC, 'lenz', '10.0')
+
+        # Child instance — evaluated-style Float value + _hasbehaviors.
+        stamp.call(child, child_defn.name)
+        child.set_attribute(DICT_DC, '_hasbehaviors', 1.0)
+        child.set_attribute(DICT_DC, '_iscollapsed', 'false')
+        child.set_attribute(DICT_DC, 'lenx', 1.0)
         model.commit_operation
 
-        # Parent override as a STRING too, then redraw.
-        instance.set_attribute(DICT_DC, 'lenx', '20.0')
-        redraw(instance)
-        width_a = instance.bounds.width
-        hit_a = (width_a - 20.0).abs < 0.001
-        say.call("Phase A (dialog-exact strings): #{hit_a ? 'HIT' : 'miss'} " \
-                 "w=#{width_a.round(3)}\" child lenx=" \
-                 "#{child.valid? ? get_attr(child, :lenx).inspect : 'n/a'}")
-
-        # Does the engine even recognise behaviors on our component?
-        %i[has_behaviors children_have_behaviors].each do |m|
-          next unless dcs.respond_to?(m)
-
-          begin
-            say.call("dcs.#{m}(instance) => #{dcs.send(m, instance).inspect}")
-          rescue StandardError => e
-            say.call("dcs.#{m}(instance) raised #{e.class}: #{e.message}")
-          end
+        say.call("child formula = #{formula.inspect}")
+        begin
+          dcs.update_last_sizes(instance)
+          say.call('dcs.update_last_sizes(instance): ok')
+        rescue StandardError => e
+          say.call("dcs.update_last_sizes raised #{e.class}: #{e.message}")
         end
 
-        # -- Phase B: the engine's own authoring API -------------------------
+        # Helper: report x/y/z extents (BoundingBox: width=x, depth=y,
+        # height=z) plus the child's stored lenx.
+        measure = lambda do |tag|
+          b = instance.bounds
+          say.call("#{tag}: x=#{b.width.round(3)} y=#{b.depth.round(3)} " \
+                   "z=#{b.height.round(3)} child lenx=" \
+                   "#{child.valid? ? get_attr(child, :lenx).inspect : 'n/a'}")
+          b.width
+        end
+
+        # -- Phase A: attribute write + redraw (the classic recipe) ---------
+        dcs.redraw(instance)
+        hit_a = (measure.call('Phase A attr+redraw') - 20.0).abs < 0.001
+
+        # -- Phase B: bare formula-evaluation pass ---------------------------
+        hit_b = false
         unless hit_a
           begin
-            call_flex = lambda do |method_name, *args|
-              dcs.method(method_name).call(*args)
-              true
-            rescue ArgumentError
-              false
-            rescue StandardError => e
-              say.call("dcs.#{method_name} raised #{e.class}: #{e.message}")
-              false
-            end
-
-            wrote_formula =
-              call_flex.call(:set_attribute_formula, child, 'lenx', 'parent!lenx') ||
-              call_flex.call(:set_attribute_formula, child, DICT_DC, 'lenx', 'parent!lenx')
-            wrote_value =
-              call_flex.call(:set_attribute, instance, 'lenx', '20.0') ||
-              call_flex.call(:set_attribute, instance, DICT_DC, 'lenx', '20.0')
-            say.call("Phase B writes: formula=#{wrote_formula} value=#{wrote_value}")
-
-            dcs.redraw(instance)
-            width_b = instance.bounds.width
-            hit_b = (width_b - 20.0).abs < 0.001
-            say.call("Phase B (engine API): #{hit_b ? 'HIT' : 'miss'} " \
-                     "w=#{width_b.round(3)}\" child lenx=" \
-                     "#{child.valid? ? get_attr(child, :lenx).inspect : 'n/a'}")
+            dcs.run_all_formulas(instance)
+            hit_b = (measure.call('Phase B run_all_formulas') - 20.0).abs < 0.001
           rescue StandardError => e
             say.call("Phase B crashed: #{e.class}: #{e.message}")
           end
+        end
 
-          # -- Phase C: split evaluation from application --------------------
-          # run_all_formulas is the engine's bare formula-evaluation pass.
-          # If the child's lenx becomes 20 here while geometry stays 1",
-          # evaluation works and only the geometry application step is
-          # rejecting us; if lenx stays 1.0, evaluation itself never runs
-          # on our component.
+        # -- Phase C: LIVE-VALUE theory decider ------------------------------
+        # Hypothesis: formulas read len* of other components from LIVE
+        # geometry, not from the dictionary — the Options dialog physically
+        # scales the component first, then redraws. So: scale the root to
+        # 20" wide by transform (what the dialog/Scale tool does), redraw,
+        # and see whether the child now follows the formula, and whether
+        # its dictionary leny/lenz (10") get applied to geometry.
+        unless hit_a || hit_b
           begin
-            dcs.run_all_formulas(instance)
-            child_raw = child.valid? ? get_attr(child, :lenx) : nil
-            engine_read = begin
-              dcs.get_attribute_value(child, 'lenx')
+            model.start_operation('ParaFrame Self-Test (scale)', true)
+            scale = Geom::Transformation.scaling(Geom::Point3d.new(0, 0, 0),
+                                                 20.0, 1.0, 1.0)
+            model.active_entities.transform_entities(scale, instance)
+            model.commit_operation
+            measure.call('Phase C after live scale x20 (before redraw)')
+            dcs.redraw(instance)
+            measure.call('Phase C after redraw')
+            begin
+              dcs.update_last_sizes(instance)
+              dcs.redraw(instance)
+              measure.call('Phase C after update_last_sizes + redraw')
             rescue StandardError => e
-              "(#{e.class})"
+              say.call("update_last_sizes step: #{e.class}: #{e.message}")
             end
-            say.call("Phase C run_all_formulas: w=#{instance.bounds.width.round(3)}\" " \
-                     "child lenx=#{child_raw.inspect} " \
-                     "engine reads=#{engine_read.inspect}")
           rescue StandardError => e
             say.call("Phase C crashed: #{e.class}: #{e.message}")
           end
