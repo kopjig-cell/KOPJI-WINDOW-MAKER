@@ -155,6 +155,51 @@ module Kopji
         nil
       end
 
+      # ----------------------------------------- DC authoring (generators)
+      # These encode the dictionary layout of dialog-authored components,
+      # byte-verified against a SketchUp 2025 dump. Get the layout wrong
+      # and the engine silently skips the component (no error, no redraw).
+
+      # Marks a dictionary the way the Attributes dialog does. Call once
+      # per definition AND once per instance that carries DC attributes.
+      def init_dc_dict!(entity, name)
+        entity.set_attribute(DICT_DC, '_formatversion', 1.0)
+        entity.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
+        entity.set_attribute(DICT_DC, '_name', name)
+        entity.set_attribute(DICT_DC, '_has_movetool_behaviors', 0.0)
+        entity
+      end
+
+      # Declares a top-level user input on a DEFINITION: value stored as a
+      # plain-number STRING (inches for lengths — the user-input
+      # convention), plus its label. Example:
+      #   declare_input(defn, :framewidth, 2.36, label: 'FrameWidth')
+      def declare_input(definition, key, value, label: nil)
+        key = normalize_key(key)
+        definition.set_attribute(DICT_DC, key,
+                                 value.is_a?(Numeric) ? value.to_f.to_s : value.to_s)
+        definition.set_attribute(DICT_DC, "_#{key}_label", label || key)
+        nil
+      end
+
+      # Declares a formula-driven attribute on a CHILD inside a DC. The
+      # engine requires: the formula on the child's DEFINITION, referencing
+      # the parent definition BY NAME (e.g. "CasementWindow!LenX"),
+      # _hasbehaviors = 1.0 on both child instance and definition, and a
+      # seed value (Float, evaluated-result convention).
+      def declare_child_formula(child_instance, key, formula, seed: 0.0, label: nil)
+        key = normalize_key(key)
+        child_defn = definition_of(child_instance)
+        [child_instance, child_defn].each do |t|
+          t.set_attribute(DICT_DC, '_hasbehaviors', 1.0)
+        end
+        child_defn.set_attribute(DICT_DC, "_#{key}_formula", formula.to_s)
+        child_defn.set_attribute(DICT_DC, "_#{key}_label", label || key)
+        child_defn.set_attribute(DICT_DC, key, seed.to_f)
+        child_instance.set_attribute(DICT_DC, key, seed.to_f)
+        nil
+      end
+
       # Removes an instance's override so the definition default/formula
       # applies again on the next redraw.
       def clear_attr(instance, key)
@@ -183,23 +228,95 @@ module Kopji
       # Asks the DC engine to re-evaluate formulas and rebuild the
       # instance's geometry. Returns true on success.
       #
-      # +undo+: redraw_with_undo wraps the redraw in its own undo step —
-      # right when the redraw IS the user action. Pass undo: false when the
-      # caller is already inside model.start_operation (the DC engine then
-      # redraws within the caller's open operation, keeping one undo step).
-      def redraw(instance, undo: true)
+      # Empirically established on SketchUp 2025 (see self_test):
+      #  * dcs.redraw(entity, false) is the reliable entry point — the
+      #    progress_bar_visible=false argument matters, a bare
+      #    dcs.redraw(entity) can crash in the engine's progress counter.
+      #  * redraw_with_undo returns in ~0.7 ms without doing the work in
+      #    several situations, so we wrap the plain redraw in our own
+      #    operation instead when an undo step is wanted.
+      #  * Formulas referencing another component's LenX/Y/Z read the LIVE
+      #    geometry, not the dictionary — to change a size programmatically
+      #    use resize!, never a bare attribute write.
+      #
+      # +undo+: true wraps the redraw in its own operation (single undo
+      # step). Pass undo: false when the caller already has an operation
+      # open — the redraw then joins the caller's undo step.
+      def redraw(instance, undo: false)
         return false unless ensure_dc!
 
         dcs = $dc_observers.get_latest_class
-        if undo && dcs.respond_to?(:redraw_with_undo)
-          dcs.redraw_with_undo(instance)
+        model = instance.respond_to?(:model) && instance.model ? instance.model : Sketchup.active_model
+        if undo
+          model.start_operation('ParaFrame Redraw', true)
+          begin
+            dcs.redraw(instance, false)
+            model.commit_operation
+          rescue StandardError
+            model.abort_operation rescue nil
+            raise
+          end
         else
-          dcs.redraw(instance)
+          dcs.redraw(instance, false)
         end
         true
       rescue StandardError => e
         puts "[ParaFrame] DC redraw failed: #{e.class}: #{e.message}"
         UI.messagebox("ParaFrame: Dynamic Component redraw failed.\n#{e.message}")
+        false
+      end
+
+      # Resizes a dynamic component the way the native Options dialog and
+      # Scale tool do — the ONLY way that works programmatically:
+      #
+      #   1. scale the instance's geometry (formulas read sizes LIVE),
+      #   2. record the new size in the dictionary (input-style strings),
+      #   3. refresh the engine's last-size bookkeeping,
+      #   4. redraw so child formulas re-evaluate against the new size.
+      #
+      # All four steps commit as ONE undo step. Lengths in inches; nil
+      # leaves that axis unchanged.
+      def resize!(instance, lenx: nil, leny: nil, lenz: nil)
+        return false unless ensure_dc!
+
+        model = instance.model
+        defn = definition_of(instance)
+        t = instance.transformation
+        # Current size along the instance's own axes = untransformed
+        # definition extents × the transformation's axis scale factors
+        # (BoundingBox: width=x, depth=y, height=z).
+        db = defn.bounds
+        current = [db.width * t.xaxis.length,
+                   db.depth * t.yaxis.length,
+                   db.height * t.zaxis.length]
+        targets = [lenx, leny, lenz]
+        factors = targets.each_with_index.map do |target, i|
+          target.nil? || current[i].zero? ? 1.0 : target.to_f / current[i]
+        end
+
+        model.start_operation('ParaFrame Resize', true)
+        # Scale about the component's own origin, in its own axes.
+        instance.transformation =
+          t * Geom::Transformation.scaling(Geom::Point3d.new(0, 0, 0), *factors)
+        %w[lenx leny lenz].each_with_index do |key, i|
+          next if targets[i].nil?
+
+          # User-input convention: plain-number string, inches.
+          instance.set_attribute(DICT_DC, key, targets[i].to_f.to_s)
+        end
+        dcs = $dc_observers.get_latest_class
+        begin
+          dcs.update_last_sizes(instance)
+        rescue StandardError
+          nil # bookkeeping only; older builds may lack it
+        end
+        dcs.redraw(instance, false)
+        model.commit_operation
+        true
+      rescue StandardError => e
+        model.abort_operation rescue nil
+        puts "[ParaFrame] resize! failed: #{e.class}: #{e.message}"
+        UI.messagebox("ParaFrame: component resize failed.\n#{e.message}")
         false
       end
 
@@ -527,51 +644,24 @@ module Kopji
 
       # ---------------------------------------------------- dev self-test
 
-      # End-to-end probe of the DC engine, reachable from Extensions →
-      # ParaFrame → DC Bridge Self-Test (dev). Two authoring strategies are
-      # tried on a parent+child component (child width must follow the
-      # parent's lenx input to 20"):
+      # Regression test of the PROVEN bridge pipeline, reachable from
+      # Extensions → ParaFrame → DC Bridge Self-Test (dev).
       #
-      #   Phase A — replicate the dictionary layout of a dialog-authored DC
-      #     exactly as dumped from a live SketchUp 2026: attribute VALUES
-      #     stored as STRINGS (in the units declared by _lengthunits, here
-      #     INCHES), dialog stamps (_formatversion/_lengthunits/_name/
-      #     _has_movetool_behaviors/_lastmodified) on definition AND
-      #     instance dictionaries.
-      #
-      #   Phase B — if A misses: write through the engine's OWN authoring
-      #     API (set_attribute / set_attribute_formula), probing their
-      #     parameter lists (printed to the console) for the right arity.
-      #
-      # A deferred re-measure runs 2 s later, then cleanup. Everything is
-      # reported via messagebox AND the Ruby Console.
+      # Builds a parent+child component through the production authoring
+      # API (init_dc_dict!/declare_input/declare_child_formula), resizes it
+      # with resize! — geometry-first, the way the engine actually works —
+      # and verifies the child's "ParentName!LenX" formula followed.
+      # Cleans up synchronously; three undo steps (build, resize, cleanup).
       def self_test(model = Sketchup.active_model)
         return false unless ensure_dc!
 
-        dcs = $dc_observers.get_latest_class
-        log = []
-        say = lambda do |line|
-          log << line
-          puts "[ParaFrame] #{line}"
+        checks = []
+        pass = lambda do |label, ok, detail = nil|
+          checks << "#{ok ? 'PASS' : 'FAIL'}  #{label}#{detail ? " (#{detail})" : ''}"
+          ok
         end
 
-        say.call("DC engine: #{dcs.class}")
-        # Parameter lists of the engine's authoring API (console only).
-        %i[set_attribute set_attribute_formula get_attribute_value redraw
-           redraw_with_undo run_all_formulas store_nominal_size
-           update_last_sizes has_behaviors children_have_behaviors].each do |m|
-          next unless dcs.respond_to?(m)
-
-          puts "[ParaFrame]   dcs.#{m} params: #{dcs.method(m).parameters.inspect}"
-        end
-
-        # -- build ----------------------------------------------------------
-        # Byte-level replication of a dialog-authored DC as dumped from
-        # SketchUp 2025: user inputs are STRINGS of inch-numbers, evaluated
-        # results are Floats, the child formula lives on the child
-        # DEFINITION only and references the parent BY NAME, the child
-        # carries _hasbehaviors=1.0 on instance AND definition, the parent
-        # definition carries _len*_nominal bookkeeping.
+        # -- build via the production authoring API --------------------------
         model.start_operation('ParaFrame Self-Test (build)', true)
         child_defn = model.definitions.add('PFSelfTestChild')
         face = child_defn.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
@@ -581,161 +671,59 @@ module Kopji
         parent_defn = model.definitions.add('PFSelfTestParent')
         child = parent_defn.entities.add_instance(child_defn, Geom::Transformation.new)
         instance = model.active_entities.add_instance(parent_defn, Geom::Transformation.new)
+
+        init_dc_dict!(parent_defn, parent_defn.name)
+        init_dc_dict!(instance, parent_defn.name)
+        init_dc_dict!(child_defn, child_defn.name)
+        init_dc_dict!(child, child_defn.name)
+        declare_input(parent_defn, :lenx, 1.0, label: 'LenX')
+        declare_input(parent_defn, :sillheight, 35.0) # definition-only: fallback check
+        declare_child_formula(child, :lenx, "#{parent_defn.name}!LenX",
+                              seed: 1.0, label: 'LenX')
         mark_paraframe!(instance, :window)
-
-        stamp = lambda do |entity, name|
-          entity.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
-          entity.set_attribute(DICT_DC, '_name', name)
-          entity.set_attribute(DICT_DC, '_has_movetool_behaviors', 0.0)
-        end
-
-        # Parent definition — input lenx as STRING + nominal bookkeeping.
-        stamp.call(parent_defn, parent_defn.name)
-        parent_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
-        parent_defn.set_attribute(DICT_DC, '_lastmodified',
-                                  Time.now.strftime('%Y-%m-%d %H:%M'))
-        parent_defn.set_attribute(DICT_DC, '_lenx_label', 'LenX')
-        parent_defn.set_attribute(DICT_DC, 'lenx', '20.0')
-        parent_defn.set_attribute(DICT_DC, '_lenx_nominal', 1.0)
-        parent_defn.set_attribute(DICT_DC, '_leny_nominal', 1.0)
-        parent_defn.set_attribute(DICT_DC, '_lenz_nominal', 1.0)
-        # sillheight only on the definition — proves instance→definition
-        # fallback further down.
-        parent_defn.set_attribute(DICT_DC, 'sillheight', 35.0)
-
-        # Parent instance — mirrors the input (dump shows NO _hasbehaviors
-        # on the parent).
-        stamp.call(instance, parent_defn.name)
-        instance.set_attribute(DICT_DC, 'lenx', '20.0')
-
-        # Child definition — formula by parent NAME, dialog-case reference.
-        formula = "#{parent_defn.name}!LenX"
-        stamp.call(child_defn, child_defn.name)
-        child_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
-        child_defn.set_attribute(DICT_DC, '_hasbehaviors', 1.0)
-        child_defn.set_attribute(DICT_DC, '_lastmodified',
-                                 Time.now.strftime('%Y-%m-%d %H:%M'))
-        child_defn.set_attribute(DICT_DC, '_lenx_label', 'LenX')
-        child_defn.set_attribute(DICT_DC, '_lenx_formula', formula)
-        child_defn.set_attribute(DICT_DC, 'lenx', 1.0)
-        child_defn.set_attribute(DICT_DC, '_leny_label', 'LenY')
-        child_defn.set_attribute(DICT_DC, 'leny', '10.0')
-        child_defn.set_attribute(DICT_DC, '_lenz_label', 'LenZ')
-        child_defn.set_attribute(DICT_DC, 'lenz', '10.0')
-
-        # Child instance — evaluated-style Float value + _hasbehaviors.
-        stamp.call(child, child_defn.name)
-        child.set_attribute(DICT_DC, '_hasbehaviors', 1.0)
-        child.set_attribute(DICT_DC, '_iscollapsed', 'false')
-        child.set_attribute(DICT_DC, 'lenx', 1.0)
         model.commit_operation
 
-        say.call("child formula = #{formula.inspect}")
-        begin
-          dcs.update_last_sizes(instance)
-          say.call('dcs.update_last_sizes(instance): ok')
-        rescue StandardError => e
-          say.call("dcs.update_last_sizes raised #{e.class}: #{e.message}")
+        # -- exercise the production resize path ------------------------------
+        ok_resize = resize!(instance, lenx: 20.0)
+        bounds = instance.bounds
+        child_lenx = child.valid? ? get_attr(child, :lenx) : nil
+
+        pass.call('resize! ran', ok_resize)
+        pass.call('geometry resized (x=20")',
+                  (bounds.width - 20.0).abs < 0.001,
+                  "x=#{bounds.width.round(3)} y=#{bounds.depth.round(3)} " \
+                  "z=#{bounds.height.round(3)}")
+        pass.call('child formula followed (ParentName!LenX)',
+                  child_lenx.to_f == 20.0, "child lenx=#{child_lenx.inspect}")
+        pass.call('input read back',
+                  get_attr(instance, :lenx).to_f == 20.0,
+                  "lenx=#{get_attr(instance, :lenx).inspect}")
+        pass.call('definition default fallback',
+                  get_attr(instance, :sillheight).to_f == 35.0)
+        pass.call('ParaFrame marker', paraframe_type(instance) == 'window')
+        pass.call('mm round-trip',
+                  (inch_to_mm(mm_to_inch(1200.0)) - 1200.0).abs < 1e-9)
+        pass.call('display-unit round-trip',
+                  (from_display(to_display(47.244, model), model) - 47.244).abs < 1e-9,
+                  "model units: #{model_unit_name(model)}")
+
+        # -- clean up ---------------------------------------------------------
+        model.start_operation('ParaFrame Self-Test (cleanup)', true)
+        instance.erase! if instance.valid?
+        if model.definitions.respond_to?(:remove)
+          model.definitions.remove(parent_defn) if parent_defn.valid?
+          model.definitions.remove(child_defn) if child_defn.valid?
         end
+        model.commit_operation
 
-        # Helper: report x/y/z extents (BoundingBox: width=x, depth=y,
-        # height=z) plus the child's stored lenx.
-        measure = lambda do |tag|
-          b = instance.bounds
-          say.call("#{tag}: x=#{b.width.round(3)} y=#{b.depth.round(3)} " \
-                   "z=#{b.height.round(3)} child lenx=" \
-                   "#{child.valid? ? get_attr(child, :lenx).inspect : 'n/a'}")
-          b.width
-        end
-
-        # Each engine call individually rescued: the last run CRASHED
-        # inside the engine's child loop (dcutils advance — an
-        # uninitialized progress counter when redraw is called directly),
-        # which is itself good news: the engine now descends into our
-        # child. Try the entry-point shapes from safest to most direct.
-        attempt = lambda do |desc, &blk|
-          blk.call
-          say.call("#{desc}: ran")
-          true
-        rescue StandardError => e
-          say.call("#{desc}: #{e.class}: #{e.message.to_s.lines.first.to_s.strip}")
-          false
-        end
-
-        hit = false
-        # -- Phase A: attribute write + the engine's redraw entry points ----
-        [
-          ['A1 redraw_with_undo',            -> { dcs.redraw_with_undo(instance) }],
-          ['A2 redraw(inst, false)',         -> { dcs.redraw(instance, false) }],
-          ['A3 redraw(inst, false, true)',   -> { dcs.redraw(instance, false, true) }],
-          ['B  run_all_formulas',            -> { dcs.run_all_formulas(instance) }]
-        ].each do |desc, blk|
-          break if hit
-
-          attempt.call(desc, &blk)
-          hit = (measure.call("after #{desc}") - 20.0).abs < 0.001
-        end
-
-        # -- Phase C: LIVE-VALUE theory decider ------------------------------
-        # Hypothesis: formulas read len* of other components from LIVE
-        # geometry, not from the dictionary — the Options dialog physically
-        # scales the component first, then redraws. So: scale the root to
-        # 20" wide by transform (what the dialog/Scale tool does), redraw,
-        # and see whether the child follows the formula and whether its
-        # dictionary leny/lenz (10") get applied to geometry.
-        unless hit
-          model.start_operation('ParaFrame Self-Test (scale)', true)
-          scale = Geom::Transformation.scaling(Geom::Point3d.new(0, 0, 0),
-                                               20.0, 1.0, 1.0)
-          model.active_entities.transform_entities(scale, instance)
-          model.commit_operation
-          measure.call('C  after live scale x20, before redraw')
-          if attempt.call('C1 update_last_sizes', &-> { dcs.update_last_sizes(instance) }) &&
-             attempt.call('C2 redraw(inst, false)', &-> { dcs.redraw(instance, false) })
-            measure.call('after C2')
-          end
-          attempt.call('C3 redraw_with_undo', &-> { dcs.redraw_with_undo(instance) })
-          measure.call('after C3')
-        end
-
-        # Bridge regression checks (independent of the engine).
-        say.call("fallback=#{get_attr(instance, :sillheight, :none).inspect} " \
-                 "marker=#{paraframe_type(instance).inspect} " \
-                 "mm_ok=#{(inch_to_mm(mm_to_inch(1200.0)) - 1200.0).abs < 1e-9} " \
-                 "display_ok=#{(from_display(to_display(47.244, model), model) - 47.244).abs < 1e-9} " \
-                 "(model units: #{model_unit_name(model)})")
-
-        UI.messagebox("ParaFrame self-test (immediate):\n\n#{log.join("\n")}\n\n" \
-                      'Second messagebox follows in ~2 s.')
-
-        # -- deferred re-measure + cleanup ------------------------------------
-        UI.start_timer(2.0, false) do
-          begin
-            late_width = instance.valid? ? instance.bounds.width : -1.0
-            late_child = child.valid? ? get_attr(child, :lenx) : nil
-            late_msg = "ParaFrame deferred re-measure (2 s later):\n" \
-                       "bounds.width=#{late_width.round(3)}\", " \
-                       "child lenx=#{late_child.inspect}\n" +
-                       ((late_width - 20.0).abs < 0.001 ?
-                         'RESIZED late — engine applies asynchronously.' :
-                         'Still unresized.')
-            puts "[ParaFrame] #{late_msg}"
-            model.start_operation('ParaFrame Self-Test (cleanup)', true)
-            instance.erase! if instance.valid?
-            if model.definitions.respond_to?(:remove)
-              model.definitions.remove(parent_defn) if parent_defn.valid?
-              model.definitions.remove(child_defn) if child_defn.valid?
-            end
-            model.commit_operation
-            UI.messagebox(late_msg)
-          rescue StandardError => e
-            puts "[ParaFrame] deferred check failed: #{e.class}: #{e.message}"
-          end
-        end
-        true
+        all_ok = checks.none? { |line| line.start_with?('FAIL') }
+        summary = "ParaFrame DC bridge self-test: #{all_ok ? 'ALL PASS' : 'FAILURES'}\n\n" +
+                  checks.join("\n")
+        puts "[ParaFrame] #{summary}"
+        UI.messagebox(summary)
+        all_ok
       rescue StandardError => e
         model.abort_operation rescue nil
-        # Remove any test entities a mid-phase crash left behind.
         begin
           model.start_operation('ParaFrame Self-Test (crash cleanup)', true)
           instance.erase! if defined?(instance) && instance && instance.valid?
