@@ -97,6 +97,7 @@ module Kopji
         menu.add_separator
         menu.add_item('Reload ParaFrame (dev)') { reload }
         menu.add_item('DC Bridge Self-Test (dev)') { DCBridge.self_test }
+        menu.add_item('Dump DC Attributes of Selection (dev)') { DCBridge.dump_attributes }
 
         toolbar = UI::Toolbar.new('ParaFrame')
         commands.each_value { |cmd| toolbar.add_item(cmd) }

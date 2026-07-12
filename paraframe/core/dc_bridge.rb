@@ -135,6 +135,26 @@ module Kopji
         entity.set_attribute(DICT_DC, key, coerce(seed))
       end
 
+      # Declares a DC attribute the way the native Attributes dialog does:
+      # value plus its declaration metadata. The engine enumerates a
+      # component's attributes via this metadata — a bare key/value pair
+      # without "_<key>_label" is invisible to the redraw (it will sync
+      # size keys FROM geometry but never apply them TO geometry).
+      #
+      #   declare_attr(defn,  :lenx, 47.24, units: 'INCHES')
+      #   declare_attr(child, :lenx, 1.0, formula: 'parent!lenx', units: 'INCHES')
+      #
+      # @param units [String, nil] 'INCHES' for lengths, 'DEGREES' for
+      #   rotations, nil for unitless numbers/strings
+      def declare_attr(entity, key, value, formula: nil, units: nil)
+        key = normalize_key(key)
+        entity.set_attribute(DICT_DC, key, coerce(value))
+        entity.set_attribute(DICT_DC, "_#{key}_label", key)
+        entity.set_attribute(DICT_DC, "_#{key}_formula", formula.to_s) if formula
+        entity.set_attribute(DICT_DC, "_#{key}_units", units) if units
+        nil
+      end
+
       # Removes an instance's override so the definition default/formula
       # applies again on the next redraw.
       def clear_attr(instance, key)
@@ -247,6 +267,60 @@ module Kopji
         Sketchup.format_length(inches)
       end
 
+      # ------------------------------------------------ dev attribute dump
+
+      # Prints every attribute dictionary of the selected component(s) —
+      # instance AND definition, recursing into nested components — to the
+      # Ruby Console. Dev tool: select any dynamic component that is known
+      # to work (e.g. one authored in the native Attributes dialog) and
+      # compare its dictionary layout with what ParaFrame writes.
+      def dump_attributes(model = Sketchup.active_model)
+        targets = model.selection.select do |e|
+          e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
+        end
+        if targets.empty?
+          UI.messagebox('ParaFrame: select a component or group first, ' \
+                        'then run the dump again.')
+          return
+        end
+        puts "==== ParaFrame attribute dump (#{Time.now}) ===="
+        targets.each { |e| dump_entity_tree(e) }
+        puts '==== end of dump ===='
+        UI.messagebox("Dumped #{targets.size} component tree(s) to the " \
+                      'Ruby Console (Extensions → Developer → Ruby Console).')
+      end
+
+      # Recursive worker for dump_attributes.
+      def dump_entity_tree(entity, depth = 0)
+        indent = '  ' * depth
+        kind = entity.class.name.split('::').last
+        label = entity.respond_to?(:name) && !entity.name.to_s.empty? ? " '#{entity.name}'" : ''
+        defn = definition_of(entity)
+        puts "#{indent}#{kind}#{label}#{defn ? " <def: #{defn.name}>" : ''}"
+        dump_dicts(entity, "#{indent}  [instance] ")
+        if defn
+          dump_dicts(defn, "#{indent}  [definition] ")
+          defn.entities.each do |child|
+            next unless child.is_a?(Sketchup::ComponentInstance) ||
+                        child.is_a?(Sketchup::Group)
+
+            dump_entity_tree(child, depth + 1)
+          end
+        end
+      end
+
+      # Prints every dictionary/key/value pair of one entity.
+      def dump_dicts(entity, prefix)
+        dicts = entity.attribute_dictionaries
+        return puts "#{prefix}(no attribute dictionaries)" unless dicts
+
+        dicts.each do |dict|
+          dict.each_pair do |k, v|
+            puts "#{prefix}#{dict.name} | #{k} = #{v.inspect}"
+          end
+        end
+      end
+
       # ---------------------------------------------------- dev self-test
 
       # End-to-end check of the bridge inside a live SketchUp session,
@@ -284,21 +358,28 @@ module Kopji
         parent_defn = model.definitions.add('ParaFrame Self-Test')
         child = parent_defn.entities.add_instance(child_defn, Geom::Transformation.new)
 
-        # Parent inputs live on its definition as defaults; sillheight
-        # exists ONLY there so we can prove the instance→definition
-        # fallback. _formatversion marks the dict the way the native
-        # Attributes dialog does.
+        # Parent inputs are DECLARED (value + dialog-style metadata) on its
+        # definition; sillheight exists ONLY there so we can prove the
+        # instance→definition fallback. _formatversion/_lengthunits/_name
+        # mark the dictionary the way the native Attributes dialog does.
         parent_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
-        set_definition_attr(parent_defn, :lenx, 10.0)
-        set_definition_attr(parent_defn, :sillheight, 35.0)
+        parent_defn.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
+        parent_defn.set_attribute(DICT_DC, '_name', 'ParaFrameSelfTest')
+        declare_attr(parent_defn, :lenx, 10.0, units: 'INCHES')
+        declare_attr(parent_defn, :sillheight, 35.0, units: 'INCHES')
 
         # Child: width follows the parent input, depth/height fixed 10".
-        # Everything goes on the child INSTANCE dictionary — the engine
-        # ignores formulas on a sub-component's definition.
-        child.set_attribute(DICT_DC, '_formatversion', 1.0)
-        set_formula(child, :lenx, 'parent!lenx', 10.0)
-        set_attr(child, :leny, 10.0)
-        set_attr(child, :lenz, 10.0)
+        # Declarations are mirrored onto BOTH the child instance and its
+        # definition — dialog-authored DCs carry them in both places and
+        # engine builds differ in which side they read.
+        child.name = 'TestChild'
+        [child, child_defn].each do |target|
+          target.set_attribute(DICT_DC, '_formatversion', 1.0)
+          target.set_attribute(DICT_DC, '_name', 'TestChild')
+          declare_attr(target, :lenx, 1.0, formula: 'parent!lenx', units: 'INCHES')
+          declare_attr(target, :leny, 10.0, units: 'INCHES')
+          declare_attr(target, :lenz, 10.0, units: 'INCHES')
+        end
 
         instance = model.active_entities.add_instance(parent_defn, Geom::Transformation.new)
         mark_paraframe!(instance, :window)
