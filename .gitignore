@@ -1,0 +1,5 @@
+dist/
+*.rbz
+.DS_Store
+Thumbs.db
+paraframe/resources/thumbs/*.png
