@@ -98,6 +98,7 @@ module Kopji
         menu.add_item('Reload ParaFrame (dev)') { reload }
         menu.add_item('DC Bridge Self-Test (dev)') { DCBridge.self_test }
         menu.add_item('Dump DC Attributes of Selection (dev)') { DCBridge.dump_attributes }
+        menu.add_item('DC Formula Matrix Test (dev)') { DCBridge.matrix_test }
 
         toolbar = UI::Toolbar.new('ParaFrame')
         commands.each_value { |cmd| toolbar.add_item(cmd) }

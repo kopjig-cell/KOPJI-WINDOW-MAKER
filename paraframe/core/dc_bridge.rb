@@ -321,6 +321,128 @@ module Kopji
         end
       end
 
+      # ------------------------------------------------- dev formula matrix
+
+      # Dev tool that empirically discovers which dictionary layout makes
+      # the DC engine evaluate child formulas in THIS SketchUp build. Each
+      # variant builds a parent (input lenx=10) with a unit-cube child that
+      # should end up 20" wide after the parent's lenx is overridden to 20
+      # and the DC engine redraws. A variant "hits" when bounds.width==20.
+      #
+      # Variant axes:
+      #   behaviors : also write "_hasbehaviors" = 1.0 on the definitions
+      #   full_meta : add _access/_formlabel + declared x/y/z, like the
+      #               native Attributes dialog writes
+      #   side      : where the child's declarations live
+      #               (:both / :instance / :definition)
+      #   formula   : the formula string, or nil for a plain lenx=20 value
+      MATRIX_VARIANTS = [
+        { desc: 'baseline 0.2.3 (label+units, both sides)',
+          behaviors: false, full_meta: false, side: :both, formula: 'parent!lenx' },
+        { desc: 'baseline + _hasbehaviors',
+          behaviors: true,  full_meta: false, side: :both, formula: 'parent!lenx' },
+        { desc: 'full dialog metadata',
+          behaviors: false, full_meta: true,  side: :both, formula: 'parent!lenx' },
+        { desc: 'full metadata + _hasbehaviors',
+          behaviors: true,  full_meta: true,  side: :both, formula: 'parent!lenx' },
+        { desc: 'full+behaviors, child instance only',
+          behaviors: true,  full_meta: true,  side: :instance, formula: 'parent!lenx' },
+        { desc: 'full+behaviors, child definition only',
+          behaviors: true,  full_meta: true,  side: :definition, formula: 'parent!lenx' },
+        { desc: 'full+behaviors, leading = in formula',
+          behaviors: true,  full_meta: true,  side: :both, formula: '=parent!lenx' },
+        { desc: 'full+behaviors, plain value 20 (no formula)',
+          behaviors: true,  full_meta: true,  side: :both, formula: nil }
+      ].freeze
+
+      def matrix_test(model = Sketchup.active_model)
+        return false unless ensure_dc!
+
+        results = MATRIX_VARIANTS.each_with_index.map do |opts, i|
+          run_matrix_variant(model, i + 1, opts)
+        end
+        summary = "ParaFrame DC formula matrix:\n\n#{results.join("\n")}\n\n" \
+                  'HIT = engine resized the child to 20". Send this list back.'
+        puts "[ParaFrame] #{summary}"
+        UI.messagebox(summary)
+        true
+      rescue StandardError => e
+        model.abort_operation rescue nil
+        puts "[ParaFrame] matrix test crashed: #{e.class}: #{e.message}\n" \
+             "#{e.backtrace.join("\n")}"
+        UI.messagebox("ParaFrame matrix test crashed:\n#{e.message}")
+        false
+      end
+
+      # Builds, exercises and removes one variant; returns a result line.
+      def run_matrix_variant(model, idx, opts)
+        model.start_operation("PF Matrix #{idx} build", true)
+
+        child_defn = model.definitions.add("PF Matrix #{idx} Child")
+        face = child_defn.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
+        face.pushpull(face.normal.z > 0 ? 1 : -1)
+        parent_defn = model.definitions.add("PF Matrix #{idx}")
+        child = parent_defn.entities.add_instance(child_defn, Geom::Transformation.new)
+        child.name = 'MatrixChild'
+
+        # Parent declarations (always on its definition, dialog-style).
+        stamp_dict(parent_defn, 'PFMatrixParent', opts[:behaviors])
+        declare_attr(parent_defn, :lenx, 10.0, units: 'INCHES')
+        if opts[:full_meta]
+          parent_defn.set_attribute(DICT_DC, '_lenx_access', 'TEXTBOX')
+          parent_defn.set_attribute(DICT_DC, '_lenx_formlabel', 'Width')
+        end
+
+        # Child declarations on the requested side(s).
+        targets = case opts[:side]
+                  when :instance   then [child]
+                  when :definition then [child_defn]
+                  else                  [child, child_defn]
+                  end
+        seed = opts[:formula] ? 1.0 : 20.0
+        targets.each do |t|
+          stamp_dict(t, 'MatrixChild', opts[:behaviors] && t == child_defn)
+          declare_attr(t, :lenx, seed, formula: opts[:formula], units: 'INCHES')
+          declare_attr(t, :leny, 10.0, units: 'INCHES')
+          declare_attr(t, :lenz, 10.0, units: 'INCHES')
+          next unless opts[:full_meta]
+
+          %w[x y z].each { |k| declare_attr(t, k, 0.0, units: 'INCHES') }
+          %w[lenx leny lenz x y z].each do |k|
+            t.set_attribute(DICT_DC, "_#{k}_access", 'TEXTBOX')
+          end
+        end
+
+        instance = model.active_entities.add_instance(parent_defn,
+                                                      Geom::Transformation.new)
+        model.commit_operation
+
+        set_attr(instance, :lenx, 20.0)
+        redraw(instance)
+        width = instance.bounds.width
+        child_lenx = child.valid? ? get_attr(child, :lenx) : nil
+
+        model.start_operation("PF Matrix #{idx} cleanup", true)
+        instance.erase! if instance.valid?
+        if model.definitions.respond_to?(:remove)
+          model.definitions.remove(parent_defn) if parent_defn.valid?
+          model.definitions.remove(child_defn) if child_defn.valid?
+        end
+        model.commit_operation
+
+        hit = (width - 20.0).abs < 0.001
+        "V#{idx} #{hit ? 'HIT ' : 'miss'} w=#{width.round(3)} " \
+          "childlenx=#{child_lenx.inspect} — #{opts[:desc]}"
+      end
+
+      # Common per-dictionary stamps the Attributes dialog writes.
+      def stamp_dict(entity, name, behaviors)
+        entity.set_attribute(DICT_DC, '_formatversion', 1.0)
+        entity.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
+        entity.set_attribute(DICT_DC, '_name', name)
+        entity.set_attribute(DICT_DC, '_hasbehaviors', 1.0) if behaviors
+      end
+
       # ---------------------------------------------------- dev self-test
 
       # End-to-end check of the bridge inside a live SketchUp session,
