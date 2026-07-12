@@ -117,16 +117,22 @@ module Kopji
         target.set_attribute(DICT_DC, normalize_key(key), coerce(value))
       end
 
-      # Writes a DC formula for +key+ on the definition, e.g.
-      #   set_formula(defn, :copies, 'panels-1')
+      # Writes a DC formula for +key+ onto +entity+ EXACTLY where given —
+      # no definition redirect — because the DC engine reads from different
+      # places at different levels (this is how the native Attributes
+      # dialog stores them):
+      #
+      #   * top-level component → pass the ComponentDefinition
+      #   * sub-component inside a DC → pass the child ComponentInstance;
+      #     formulas on a child's *definition* are IGNORED by the engine.
+      #
       # Per DC convention the formula lives under "_<key>_formula" and the
       # key itself keeps the last evaluated value (we seed it with +seed+ so
       # the dictionary is complete before the first redraw).
       def set_formula(entity, key, formula, seed = 0.0)
-        target = entity.respond_to?(:definition) ? entity.definition : entity
         key = normalize_key(key)
-        target.set_attribute(DICT_DC, "_#{key}_formula", formula.to_s)
-        target.set_attribute(DICT_DC, key, coerce(seed))
+        entity.set_attribute(DICT_DC, "_#{key}_formula", formula.to_s)
+        entity.set_attribute(DICT_DC, key, coerce(seed))
       end
 
       # Removes an instance's override so the definition default/formula
@@ -287,10 +293,9 @@ module Kopji
         set_definition_attr(parent_defn, :sillheight, 35.0)
 
         # Child: width follows the parent input, depth/height fixed 10".
-        # (set_formula targets the child's definition — the standard home
-        # for DC formulas; set_attr writes the child instance, which the
-        # engine merges over the definition.)
-        child_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
+        # Everything goes on the child INSTANCE dictionary — the engine
+        # ignores formulas on a sub-component's definition.
+        child.set_attribute(DICT_DC, '_formatversion', 1.0)
         set_formula(child, :lenx, 'parent!lenx', 10.0)
         set_attr(child, :leny, 10.0)
         set_attr(child, :lenz, 10.0)
@@ -307,10 +312,16 @@ module Kopji
         pass.call('instance override read back',
                   get_attr(instance, :lenx) == 20.0,
                   "lenx=#{get_attr(instance, :lenx).inspect}")
-        width = instance.bounds.width
+        # Rich detail: bounds W×H×D plus the child's evaluated lenx, so a
+        # failure shows whether formulas evaluated and which size
+        # attributes were applied (width=x, height=y, depth=z).
+        bounds = instance.bounds
+        width = bounds.width
+        child_lenx = child.valid? ? get_attr(child, :lenx) : nil
         pass.call('formula-driven child resized (child lenx = parent!lenx)',
                   (width - 20.0).abs < 0.001,
-                  "bounds.width=#{width.round(4)}\"")
+                  "bounds=#{bounds.width.round(3)}x#{bounds.height.round(3)}x" \
+                  "#{bounds.depth.round(3)}\", child lenx=#{child_lenx.inspect}")
         pass.call('definition default fallback',
                   get_attr(instance, :sillheight) == 35.0)
         pass.call('ParaFrame marker', paraframe_type(instance) == 'window')
