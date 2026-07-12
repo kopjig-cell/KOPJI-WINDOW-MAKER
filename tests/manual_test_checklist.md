@@ -47,3 +47,28 @@ phase; the full end-to-end matrix lands in Phase 10.
       Components → disable, restart): the self-test pops a friendly
       "ParaFrame needs the Dynamic Components extension" message instead of
       crashing. Re-enable DC afterwards.
+
+## Phase 3 — generated components
+
+- [ ] **Generate Components (dev)** places a 1200×1200 window at the
+      origin and a 900×2100 door 1.8 m to its right, both standing
+      upright; a messagebox lists two saved .skp paths under
+      paraframe/components/.
+- [ ] Window anatomy: 4 frame members (70 mm), one vertical mullion
+      (2 panels default), translucent glass, sill protruding forward at
+      the bottom.
+- [ ] Select the window → **Resize Selected Component (dev)** → enter
+      1800 × 1500: frame members stay 70 mm wide, the mullion re-centres,
+      glass stretches, sill follows the width. One Ctrl+Z restores the
+      old size in a single step.
+- [ ] Native **Window → Component Options** on the window shows LenX,
+      LenY, framewidth, panels, sillheight etc.; changing *panels* to 3
+      and applying adds a second mullion, evenly spaced; panels = 1
+      hides the mullion entirely.
+- [ ] Scale tool: drag the window wider, then right-click →
+      Dynamic Components → Redraw — members return to 70 mm and the
+      mullion re-spaces; overall size keeps the scaled width.
+- [ ] Door: leaf recessed in the frame, no bottom rail. Resize to
+      1000 × 2200 keeps 60 mm frame members.
+- [ ] Both .skp files exist on disk and open standalone in SketchUp
+      (File → Open) showing the same parametric behavior.

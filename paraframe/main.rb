@@ -25,6 +25,7 @@ module Kopji
 
     # --- implementation requires -------------------------------------------
     require File.join(PATH, 'core', 'dc_bridge')
+    require File.join(PATH, 'generators')
     # Uncommented as each phase lands:
     # require File.join(PATH, 'core',  'settings')
     # require File.join(PATH, 'core',  'cutter')
@@ -85,6 +86,37 @@ module Kopji
         placeholder('Toggle Plan View', 'Phase 9 (plan view mode)')
       end
 
+      # Dev helper until the config dialog (Phase 7) lands: resize the
+      # selected ParaFrame component via the proven resize! pipeline.
+      # Width/height are entered in mm; height maps to the component's
+      # local Y axis (components are authored flat, Y = height).
+      def cmd_resize_selected
+        model = Sketchup.active_model
+        instance = model.selection.grep(Sketchup::ComponentInstance)
+                        .find { |e| DCBridge.paraframe_component?(e) }
+        unless instance
+          UI.messagebox('Select a ParaFrame component first ' \
+                        '(generate one via Generate Components).')
+          return
+        end
+        t = instance.transformation
+        db = instance.definition.bounds
+        current_w = db.width * t.xaxis.length
+        current_h = db.depth * t.yaxis.length
+        input = UI.inputbox(['Width (mm)', 'Height (mm)'],
+                            [DCBridge.inch_to_mm(current_w).round,
+                             DCBridge.inch_to_mm(current_h).round],
+                            'ParaFrame Resize')
+        return unless input
+
+        DCBridge.resize!(instance,
+                         lenx: DCBridge.mm_to_inch(input[0].to_f),
+                         leny: DCBridge.mm_to_inch(input[1].to_f))
+      rescue StandardError => e
+        puts "[ParaFrame] resize command failed: #{e.class}: #{e.message}"
+        UI.messagebox("ParaFrame resize failed:\n#{e.message}")
+      end
+
       # -------------------------------------------------------------- UI
 
       # Builds menu + toolbar. Called exactly once per SketchUp session via
@@ -94,6 +126,9 @@ module Kopji
 
         menu = UI.menu('Extensions').add_submenu('ParaFrame')
         commands.each_value { |cmd| menu.add_item(cmd) }
+        menu.add_separator
+        menu.add_item('Generate Components (dev)') { Generators.generate_all }
+        menu.add_item('Resize Selected Component (dev)') { cmd_resize_selected }
         menu.add_separator
         menu.add_item('Reload ParaFrame (dev)') { reload }
         menu.add_item('DC Bridge Self-Test (dev)') { DCBridge.self_test }
