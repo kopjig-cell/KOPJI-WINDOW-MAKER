@@ -27,3 +27,20 @@ phase; the full end-to-end matrix lands in Phase 10.
       loader yields the same menu + toolbar.
 - [ ] Extension can be disabled and re-enabled from Extension Manager
       without errors.
+
+## Phase 2 — DC bridge
+
+- [ ] With Dynamic Components ENABLED: **Extensions → ParaFrame → DC Bridge
+      Self-Test (dev)** pops a messagebox reading "ALL PASS" with 8 PASS
+      lines; the same report appears in the Ruby Console.
+- [ ] During the test a cube briefly appears at the model origin and is
+      gone afterwards; the model is otherwise untouched.
+- [ ] Edit → Undo three times steps back through: cleanup, the DC redraw,
+      and the test-cube build; Redo three times replays them; run the
+      self-test again afterwards — still ALL PASS.
+- [ ] The "display-unit round-trip" line shows your model's units (e.g.
+      `model units: mm` for a metric template).
+- [ ] With Dynamic Components DISABLED (Extension Manager → Dynamic
+      Components → disable, restart): the self-test pops a friendly
+      "ParaFrame needs the Dynamic Components extension" message instead of
+      crashing. Re-enable DC afterwards.

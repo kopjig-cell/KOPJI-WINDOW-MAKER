@@ -24,9 +24,9 @@ module Kopji
     ICONS = File.join(PATH, 'resources', 'icons').freeze unless defined?(ICONS)
 
     # --- implementation requires -------------------------------------------
+    require File.join(PATH, 'core', 'dc_bridge')
     # Uncommented as each phase lands:
     # require File.join(PATH, 'core',  'settings')
-    # require File.join(PATH, 'core',  'dc_bridge')
     # require File.join(PATH, 'core',  'cutter')
     # require File.join(PATH, 'core',  'observers')
     # require File.join(PATH, 'tools', 'place_tool')
@@ -96,6 +96,7 @@ module Kopji
         commands.each_value { |cmd| menu.add_item(cmd) }
         menu.add_separator
         menu.add_item('Reload ParaFrame (dev)') { reload }
+        menu.add_item('DC Bridge Self-Test (dev)') { DCBridge.self_test }
 
         toolbar = UI::Toolbar.new('ParaFrame')
         commands.each_value { |cmd| toolbar.add_item(cmd) }
