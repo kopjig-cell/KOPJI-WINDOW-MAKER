@@ -443,6 +443,69 @@ module Kopji
         entity.set_attribute(DICT_DC, '_hasbehaviors', 1.0) if behaviors
       end
 
+      # ------------------------------------------------- dev probe selected
+
+      # Runs ParaFrame's write-and-redraw sequence against a KNOWN-GOOD,
+      # dialog-authored dynamic component selected by the user: doubles its
+      # lenx via the engine's set_attribute, redraws, and measures whether
+      # the geometry followed. If this HITs, our call sequence is sound and
+      # only our component-creation side differs from the dialog's output.
+      # Undo (Ctrl+Z) restores the component afterwards.
+      def probe_selected(model = Sketchup.active_model)
+        return false unless ensure_dc!
+
+        instance = model.selection.grep(Sketchup::ComponentInstance).first
+        unless instance
+          UI.messagebox('ParaFrame probe: select a dynamic component ' \
+                        'instance first (one that resizes via Component ' \
+                        'Options), then run again.')
+          return false
+        end
+
+        dcs = $dc_observers.get_latest_class
+        raw = instance.get_attribute(DICT_DC, 'lenx') ||
+              definition_of(instance)&.get_attribute(DICT_DC, 'lenx')
+        if raw.nil?
+          UI.messagebox('ParaFrame probe: the selected component has no ' \
+                        "lenx dynamic attribute — pick one with LenX in " \
+                        'Component Attributes.')
+          return false
+        end
+
+        before_w = instance.bounds.width
+        target = raw.to_f * 2 # stored units (whatever the dict declares)
+        lines = ["stored lenx=#{raw.inspect} → writing #{target}"]
+
+        begin
+          dcs.set_attribute(instance, 'lenx', target.to_s)
+          lines << 'write via dcs.set_attribute: ok'
+        rescue StandardError => e
+          instance.set_attribute(DICT_DC, 'lenx', target.to_s)
+          lines << "dcs.set_attribute raised #{e.class} — wrote dict directly"
+        end
+
+        redraw(instance) # redraw_with_undo path
+        mid_w = instance.bounds.width
+        lines << "after redraw_with_undo: width #{before_w.round(3)}\" → #{mid_w.round(3)}\""
+        if (mid_w - before_w).abs < 0.001 && dcs.respond_to?(:redraw)
+          dcs.redraw(instance)
+          lines << "after plain redraw: width #{instance.bounds.width.round(3)}\""
+        end
+
+        changed = (instance.bounds.width - before_w).abs > 0.001
+        verdict = changed ? 'CHANGED — our call sequence works on real DCs.' :
+                            'unchanged — even a dialog-authored DC ignores our sequence.'
+        msg = "ParaFrame probe on '#{definition_of(instance)&.name}':\n\n" \
+              "#{lines.join("\n")}\n\n#{verdict}\n\n(Ctrl+Z to restore the component.)"
+        puts "[ParaFrame] #{msg}"
+        UI.messagebox(msg)
+        changed
+      rescue StandardError => e
+        puts "[ParaFrame] probe crashed: #{e.class}: #{e.message}\n#{e.backtrace.join("\n")}"
+        UI.messagebox("ParaFrame probe crashed:\n#{e.message}")
+        false
+      end
+
       # ---------------------------------------------------- dev self-test
 
       # End-to-end probe of the DC engine, reachable from Extensions →
@@ -573,6 +636,27 @@ module Kopji
                      "#{child.valid? ? get_attr(child, :lenx).inspect : 'n/a'}")
           rescue StandardError => e
             say.call("Phase B crashed: #{e.class}: #{e.message}")
+          end
+
+          # -- Phase C: split evaluation from application --------------------
+          # run_all_formulas is the engine's bare formula-evaluation pass.
+          # If the child's lenx becomes 20 here while geometry stays 1",
+          # evaluation works and only the geometry application step is
+          # rejecting us; if lenx stays 1.0, evaluation itself never runs
+          # on our component.
+          begin
+            dcs.run_all_formulas(instance)
+            child_raw = child.valid? ? get_attr(child, :lenx) : nil
+            engine_read = begin
+              dcs.get_attribute_value(child, 'lenx')
+            rescue StandardError => e
+              "(#{e.class})"
+            end
+            say.call("Phase C run_all_formulas: w=#{instance.bounds.width.round(3)}\" " \
+                     "child lenx=#{child_raw.inspect} " \
+                     "engine reads=#{engine_read.inspect}")
+          rescue StandardError => e
+            say.call("Phase C crashed: #{e.class}: #{e.message}")
           end
         end
 

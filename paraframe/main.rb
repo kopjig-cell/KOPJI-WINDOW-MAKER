@@ -99,6 +99,7 @@ module Kopji
         menu.add_item('DC Bridge Self-Test (dev)') { DCBridge.self_test }
         menu.add_item('Dump DC Attributes of Selection (dev)') { DCBridge.dump_attributes }
         menu.add_item('DC Formula Matrix Test (dev)') { DCBridge.matrix_test }
+        menu.add_item('Probe Selected DC (dev)') { DCBridge.probe_selected }
 
         toolbar = UI::Toolbar.new('ParaFrame')
         commands.each_value { |cmd| toolbar.add_item(cmd) }
