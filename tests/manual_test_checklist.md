@@ -33,8 +33,11 @@ phase; the full end-to-end matrix lands in Phase 10.
 - [ ] With Dynamic Components ENABLED: **Extensions → ParaFrame → DC Bridge
       Self-Test (dev)** pops a messagebox reading "ALL PASS" with 8 PASS
       lines; the same report appears in the Ruby Console.
-- [ ] During the test a cube briefly appears at the model origin and is
-      gone afterwards; the model is otherwise untouched.
+- [ ] During the test a box briefly appears at the model origin and is
+      gone afterwards; the model is otherwise untouched. The key line is
+      "formula-driven child resized (child lenx = parent!lenx)" with
+      bounds.width=20.0" — that proves the DC engine evaluated our
+      formula and rebuilt geometry.
 - [ ] Edit → Undo three times steps back through: cleanup, the DC redraw,
       and the test-cube build; Redo three times replays them; run the
       self-test again afterwards — still ALL PASS.

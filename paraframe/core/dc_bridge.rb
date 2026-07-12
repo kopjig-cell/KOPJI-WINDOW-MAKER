@@ -246,10 +246,15 @@ module Kopji
       # End-to-end check of the bridge inside a live SketchUp session,
       # reachable from Extensions → ParaFrame → DC Bridge Self-Test (dev).
       #
-      # Builds a 10" cube component, makes it dynamic, overrides lenx to
-      # 20" through the bridge, asks the DC engine to redraw, and measures
-      # the result. Cleans up after itself (three undo steps: build, DC
-      # redraw, cleanup).
+      # The DC engine's redraw applies size/position attributes to the
+      # CHILDREN of a dynamic component (evaluating formulas such as
+      # "parent!lenx"); it does not rescale a childless root. So the test
+      # mirrors how real DCs — and our Phase 3 components — are built:
+      # a parent whose "lenx" is a plain input, containing a child cube
+      # whose own lenx is the formula "parent!lenx". Overriding the
+      # parent's lenx to 20" and redrawing must stretch the child to 20".
+      # Cleans up after itself (three undo steps: build, DC redraw,
+      # cleanup).
       def self_test(model = Sketchup.active_model)
         return false unless ensure_dc!
 
@@ -259,20 +264,38 @@ module Kopji
           ok
         end
 
-        # -- build a minimal dynamic component: 10" cube ------------------
+        # -- build: parent DC with one formula-driven child ----------------
         model.start_operation('ParaFrame Self-Test (build)', true)
-        defn = model.definitions.add('ParaFrame Self-Test Cube')
-        face = defn.entities.add_face([0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0])
+
+        # Child geometry: a 1" unit cube; the DC engine scales it to
+        # whatever lenx/leny/lenz evaluate to on redraw.
+        child_defn = model.definitions.add('ParaFrame Self-Test Child')
+        face = child_defn.entities.add_face([0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0])
         # add_face on the ground plane usually faces down (-Z); push-pull
         # along the normal direction so the cube always grows upward.
-        face.pushpull(face.normal.z > 0 ? 10 : -10)
-        instance = model.active_entities.add_instance(defn, Geom::Transformation.new)
-        # Definition defaults make it a real DC; sillheight exists ONLY on
-        # the definition so we can prove the instance→definition fallback.
-        set_definition_attr(defn, :lenx, 10.0)
-        set_definition_attr(defn, :leny, 10.0)
-        set_definition_attr(defn, :lenz, 10.0)
-        set_definition_attr(defn, :sillheight, 35.0)
+        face.pushpull(face.normal.z > 0 ? 1 : -1)
+
+        parent_defn = model.definitions.add('ParaFrame Self-Test')
+        child = parent_defn.entities.add_instance(child_defn, Geom::Transformation.new)
+
+        # Parent inputs live on its definition as defaults; sillheight
+        # exists ONLY there so we can prove the instance→definition
+        # fallback. _formatversion marks the dict the way the native
+        # Attributes dialog does.
+        parent_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
+        set_definition_attr(parent_defn, :lenx, 10.0)
+        set_definition_attr(parent_defn, :sillheight, 35.0)
+
+        # Child: width follows the parent input, depth/height fixed 10".
+        # (set_formula targets the child's definition — the standard home
+        # for DC formulas; set_attr writes the child instance, which the
+        # engine merges over the definition.)
+        child_defn.set_attribute(DICT_DC, '_formatversion', 1.0)
+        set_formula(child, :lenx, 'parent!lenx', 10.0)
+        set_attr(child, :leny, 10.0)
+        set_attr(child, :lenz, 10.0)
+
+        instance = model.active_entities.add_instance(parent_defn, Geom::Transformation.new)
         mark_paraframe!(instance, :window)
         model.commit_operation
 
@@ -285,7 +308,7 @@ module Kopji
                   get_attr(instance, :lenx) == 20.0,
                   "lenx=#{get_attr(instance, :lenx).inspect}")
         width = instance.bounds.width
-        pass.call('geometry resized by DC engine',
+        pass.call('formula-driven child resized (child lenx = parent!lenx)',
                   (width - 20.0).abs < 0.001,
                   "bounds.width=#{width.round(4)}\"")
         pass.call('definition default fallback',
@@ -302,7 +325,10 @@ module Kopji
         # -- clean up -------------------------------------------------------
         model.start_operation('ParaFrame Self-Test (cleanup)', true)
         instance.erase! if instance.valid?
-        model.definitions.remove(defn) if model.definitions.respond_to?(:remove) && defn.valid?
+        if model.definitions.respond_to?(:remove)
+          model.definitions.remove(parent_defn) if parent_defn.valid?
+          model.definitions.remove(child_defn) if child_defn.valid?
+        end
         model.commit_operation
 
         all_ok = checks.none? { |line| line.start_with?('FAIL') }
