@@ -488,8 +488,12 @@ module Kopji
         mid_w = instance.bounds.width
         lines << "after redraw_with_undo: width #{before_w.round(3)}\" → #{mid_w.round(3)}\""
         if (mid_w - before_w).abs < 0.001 && dcs.respond_to?(:redraw)
-          dcs.redraw(instance)
-          lines << "after plain redraw: width #{instance.bounds.width.round(3)}\""
+          begin
+            dcs.redraw(instance, false)
+            lines << "after plain redraw: width #{instance.bounds.width.round(3)}\""
+          rescue StandardError => e
+            lines << "plain redraw raised #{e.class}: #{e.message.to_s.lines.first.to_s.strip}"
+          end
         end
         changed = (instance.bounds.width - before_w).abs > 0.001
 
@@ -499,9 +503,14 @@ module Kopji
         unless changed
           scale = Geom::Transformation.scaling(instance.bounds.min, 2.0, 1.0, 1.0)
           model.active_entities.transform_entities(scale, instance)
-          dcs.redraw(instance)
-          lines << "after LIVE scale x2 + redraw: width #{instance.bounds.width.round(3)}\" " \
-                   '(check visually whether internals re-arranged, then Ctrl+Z)'
+          begin
+            dcs.redraw(instance, false)
+            lines << "after LIVE scale x2 + redraw: width #{instance.bounds.width.round(3)}\" " \
+                     '(check visually whether internals re-arranged, then Ctrl+Z)'
+          rescue StandardError => e
+            lines << "redraw after live scale raised #{e.class}: " \
+                     "#{e.message.to_s.lines.first.to_s.strip}"
+          end
         end
         verdict = changed ? 'CHANGED — our call sequence works on real DCs.' :
                             'unchanged — even a dialog-authored DC ignores our sequence.'
@@ -639,19 +648,32 @@ module Kopji
           b.width
         end
 
-        # -- Phase A: attribute write + redraw (the classic recipe) ---------
-        dcs.redraw(instance)
-        hit_a = (measure.call('Phase A attr+redraw') - 20.0).abs < 0.001
+        # Each engine call individually rescued: the last run CRASHED
+        # inside the engine's child loop (dcutils advance — an
+        # uninitialized progress counter when redraw is called directly),
+        # which is itself good news: the engine now descends into our
+        # child. Try the entry-point shapes from safest to most direct.
+        attempt = lambda do |desc, &blk|
+          blk.call
+          say.call("#{desc}: ran")
+          true
+        rescue StandardError => e
+          say.call("#{desc}: #{e.class}: #{e.message.to_s.lines.first.to_s.strip}")
+          false
+        end
 
-        # -- Phase B: bare formula-evaluation pass ---------------------------
-        hit_b = false
-        unless hit_a
-          begin
-            dcs.run_all_formulas(instance)
-            hit_b = (measure.call('Phase B run_all_formulas') - 20.0).abs < 0.001
-          rescue StandardError => e
-            say.call("Phase B crashed: #{e.class}: #{e.message}")
-          end
+        hit = false
+        # -- Phase A: attribute write + the engine's redraw entry points ----
+        [
+          ['A1 redraw_with_undo',            -> { dcs.redraw_with_undo(instance) }],
+          ['A2 redraw(inst, false)',         -> { dcs.redraw(instance, false) }],
+          ['A3 redraw(inst, false, true)',   -> { dcs.redraw(instance, false, true) }],
+          ['B  run_all_formulas',            -> { dcs.run_all_formulas(instance) }]
+        ].each do |desc, blk|
+          break if hit
+
+          attempt.call(desc, &blk)
+          hit = (measure.call("after #{desc}") - 20.0).abs < 0.001
         end
 
         # -- Phase C: LIVE-VALUE theory decider ------------------------------
@@ -659,28 +681,21 @@ module Kopji
         # geometry, not from the dictionary — the Options dialog physically
         # scales the component first, then redraws. So: scale the root to
         # 20" wide by transform (what the dialog/Scale tool does), redraw,
-        # and see whether the child now follows the formula, and whether
-        # its dictionary leny/lenz (10") get applied to geometry.
-        unless hit_a || hit_b
-          begin
-            model.start_operation('ParaFrame Self-Test (scale)', true)
-            scale = Geom::Transformation.scaling(Geom::Point3d.new(0, 0, 0),
-                                                 20.0, 1.0, 1.0)
-            model.active_entities.transform_entities(scale, instance)
-            model.commit_operation
-            measure.call('Phase C after live scale x20 (before redraw)')
-            dcs.redraw(instance)
-            measure.call('Phase C after redraw')
-            begin
-              dcs.update_last_sizes(instance)
-              dcs.redraw(instance)
-              measure.call('Phase C after update_last_sizes + redraw')
-            rescue StandardError => e
-              say.call("update_last_sizes step: #{e.class}: #{e.message}")
-            end
-          rescue StandardError => e
-            say.call("Phase C crashed: #{e.class}: #{e.message}")
+        # and see whether the child follows the formula and whether its
+        # dictionary leny/lenz (10") get applied to geometry.
+        unless hit
+          model.start_operation('ParaFrame Self-Test (scale)', true)
+          scale = Geom::Transformation.scaling(Geom::Point3d.new(0, 0, 0),
+                                               20.0, 1.0, 1.0)
+          model.active_entities.transform_entities(scale, instance)
+          model.commit_operation
+          measure.call('C  after live scale x20, before redraw')
+          if attempt.call('C1 update_last_sizes', &-> { dcs.update_last_sizes(instance) }) &&
+             attempt.call('C2 redraw(inst, false)', &-> { dcs.redraw(instance, false) })
+            measure.call('after C2')
           end
+          attempt.call('C3 redraw_with_undo', &-> { dcs.redraw_with_undo(instance) })
+          measure.call('after C3')
         end
 
         # Bridge regression checks (independent of the engine).
@@ -720,6 +735,20 @@ module Kopji
         true
       rescue StandardError => e
         model.abort_operation rescue nil
+        # Remove any test entities a mid-phase crash left behind.
+        begin
+          model.start_operation('ParaFrame Self-Test (crash cleanup)', true)
+          instance.erase! if defined?(instance) && instance && instance.valid?
+          if model.definitions.respond_to?(:remove)
+            [defined?(parent_defn) ? parent_defn : nil,
+             defined?(child_defn) ? child_defn : nil].compact.each do |d|
+              model.definitions.remove(d) if d.valid?
+            end
+          end
+          model.commit_operation
+        rescue StandardError
+          model.abort_operation rescue nil
+        end
         puts "[ParaFrame] self-test crashed: #{e.class}: #{e.message}\n#{e.backtrace.join("\n")}"
         UI.messagebox("ParaFrame self-test crashed:\n#{e.message}")
         false
