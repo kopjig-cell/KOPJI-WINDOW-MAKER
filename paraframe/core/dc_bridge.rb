@@ -164,11 +164,15 @@ module Kopji
       # per definition AND once per instance that carries DC attributes.
       def init_dc_dict!(entity, name)
         entity.set_attribute(DICT_DC, '_formatversion', 1.0)
-        # Display units for the native dialogs. Storage is ALWAYS inches
-        # (verified against a dialog-authored dump: _lengthunits was
-        # CENTIMETERS while values were stored in inches) — the DC engine
-        # has no millimetre option, so cm is the closest metric display.
-        entity.set_attribute(DICT_DC, '_lengthunits', 'CENTIMETERS')
+        # MUST be INCHES. All our stored attribute values are in inches
+        # (SketchUp's internal length unit), and the DC engine interprets
+        # a formula-driven child's numeric result in _lengthunits when it
+        # applies it to geometry. A mismatch here silently rescales every
+        # member: with CENTIMETERS the engine read our 70 mm (=2.756")
+        # frame members as 2.756 cm and drew them 2.54× too small. mm is
+        # handled at the UI layer (resize prompt, Phase 7 config dialog);
+        # the native Component Options dialog therefore displays inches.
+        entity.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
         entity.set_attribute(DICT_DC, '_name', name)
         entity.set_attribute(DICT_DC, '_has_movetool_behaviors', 0.0)
         entity
