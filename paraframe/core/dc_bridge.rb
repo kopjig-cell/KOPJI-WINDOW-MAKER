@@ -164,7 +164,11 @@ module Kopji
       # per definition AND once per instance that carries DC attributes.
       def init_dc_dict!(entity, name)
         entity.set_attribute(DICT_DC, '_formatversion', 1.0)
-        entity.set_attribute(DICT_DC, '_lengthunits', 'INCHES')
+        # Display units for the native dialogs. Storage is ALWAYS inches
+        # (verified against a dialog-authored dump: _lengthunits was
+        # CENTIMETERS while values were stored in inches) — the DC engine
+        # has no millimetre option, so cm is the closest metric display.
+        entity.set_attribute(DICT_DC, '_lengthunits', 'CENTIMETERS')
         entity.set_attribute(DICT_DC, '_name', name)
         entity.set_attribute(DICT_DC, '_has_movetool_behaviors', 0.0)
         entity
@@ -172,13 +176,25 @@ module Kopji
 
       # Declares a top-level user input on a DEFINITION: value stored as a
       # plain-number STRING (inches for lengths — the user-input
-      # convention), plus its label. Example:
-      #   declare_input(defn, :framewidth, 2.36, label: 'FrameWidth')
-      def declare_input(definition, key, value, label: nil)
+      # convention), plus its label and, by default, the metadata that
+      # makes it show up as an editable field in the native Component
+      # Options dialog (_access TEXTBOX + _formlabel).
+      #
+      #   declare_input(defn, :framewidth, 2.76, formlabel: 'Frame Width')
+      #
+      # Pass access: nil for internal inputs that should stay hidden from
+      # Component Options.
+      def declare_input(definition, key, value, label: nil, formlabel: nil,
+                        access: 'TEXTBOX')
         key = normalize_key(key)
         definition.set_attribute(DICT_DC, key,
                                  value.is_a?(Numeric) ? value.to_f.to_s : value.to_s)
         definition.set_attribute(DICT_DC, "_#{key}_label", label || key)
+        if access
+          definition.set_attribute(DICT_DC, "_#{key}_access", access)
+          definition.set_attribute(DICT_DC, "_#{key}_formlabel",
+                                   formlabel || label || key)
+        end
         nil
       end
 
@@ -295,15 +311,13 @@ module Kopji
         end
 
         model.start_operation('ParaFrame Resize', true)
-        # Scale about the component's own origin, in its own axes.
+        # Scale about the component's own origin, in its own axes. NOTE:
+        # deliberately no lenx/leny attribute writes here — the engine
+        # syncs sizes FROM live geometry on redraw, and a written value
+        # can disagree with the live measurement on rotated (glued)
+        # instances and compound into wrong sizes.
         instance.transformation =
           t * Geom::Transformation.scaling(Geom::Point3d.new(0, 0, 0), *factors)
-        %w[lenx leny lenz].each_with_index do |key, i|
-          next if targets[i].nil?
-
-          # User-input convention: plain-number string, inches.
-          instance.set_attribute(DICT_DC, key, targets[i].to_f.to_s)
-        end
         dcs = $dc_observers.get_latest_class
         begin
           dcs.update_last_sizes(instance)

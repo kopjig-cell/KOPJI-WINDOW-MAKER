@@ -47,13 +47,14 @@ module Kopji
         defn = Builder.new_root(model, 'PF_PanelDoor', :door)
         r = defn.name
 
-        DCBridge.declare_input(defn, :lenx, w, label: 'LenX')
-        DCBridge.declare_input(defn, :leny, h, label: 'LenY')
-        DCBridge.declare_input(defn, :framewidth, fw)
-        DCBridge.declare_input(defn, :framedepth, fd)
-        DCBridge.declare_input(defn, :leafthickness, lt)
-        # Doors are placed with their base on the floor.
-        DCBridge.declare_input(defn, :sillheight, 0.0)
+        DCBridge.declare_input(defn, :lenx, w, label: 'LenX', formlabel: 'Width')
+        DCBridge.declare_input(defn, :leny, h, label: 'LenY', formlabel: 'Height')
+        DCBridge.declare_input(defn, :framewidth, fw, formlabel: 'Frame Width')
+        DCBridge.declare_input(defn, :framedepth, fd, formlabel: 'Frame Depth')
+        DCBridge.declare_input(defn, :leafthickness, lt, formlabel: 'Leaf Thickness')
+        # Doors are placed with their base on the floor; hidden from the
+        # native Options dialog (placement-tool input only).
+        DCBridge.declare_input(defn, :sillheight, 0.0, access: nil)
 
         # --- frame: two full-height jambs + head ----------------------------
         jamb_l = Builder.box_child(model, defn, 'PF_Door_JambL',

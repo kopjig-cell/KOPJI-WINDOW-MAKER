@@ -64,16 +64,17 @@ module Kopji
 
         # Root user inputs. LenX/LenY are synced from live geometry by the
         # engine; the rest are plain dictionary inputs read by formulas.
-        DCBridge.declare_input(defn, :lenx, w, label: 'LenX')
-        DCBridge.declare_input(defn, :leny, h, label: 'LenY')
-        DCBridge.declare_input(defn, :framewidth, fw)
-        DCBridge.declare_input(defn, :framedepth, fd)
-        DCBridge.declare_input(defn, :panels, PANELS)
-        DCBridge.declare_input(defn, :sillheight, SILL_HEIGHT.mm)
-        DCBridge.declare_input(defn, :hassill, 1)
-        DCBridge.declare_input(defn, :glassthickness, gt)
-        DCBridge.declare_input(defn, :silldepth, sd)
-        DCBridge.declare_input(defn, :sillthickness, st)
+        DCBridge.declare_input(defn, :lenx, w, label: 'LenX', formlabel: 'Width')
+        DCBridge.declare_input(defn, :leny, h, label: 'LenY', formlabel: 'Height')
+        DCBridge.declare_input(defn, :framewidth, fw, formlabel: 'Frame Width')
+        DCBridge.declare_input(defn, :framedepth, fd, formlabel: 'Frame Depth')
+        DCBridge.declare_input(defn, :panels, PANELS, formlabel: 'Panels')
+        DCBridge.declare_input(defn, :sillheight, SILL_HEIGHT.mm,
+                               formlabel: 'Sill Height (placement)')
+        DCBridge.declare_input(defn, :hassill, 1, formlabel: 'Has Sill (1/0)')
+        DCBridge.declare_input(defn, :glassthickness, gt, formlabel: 'Glass Thickness')
+        DCBridge.declare_input(defn, :silldepth, sd, formlabel: 'Sill Depth')
+        DCBridge.declare_input(defn, :sillthickness, st, formlabel: 'Sill Thickness')
 
         # --- frame: two jambs, head, bottom rail ---------------------------
         jamb_l = Builder.box_child(model, defn, 'PF_Casement_JambL',
