@@ -49,7 +49,17 @@ module Kopji
         @transform = nil
         @face = nil
         update_ui
-        Sketchup.active_model.active_view.invalidate
+        model.active_view.invalidate
+        puts "[ParaFrame] PlaceTool active for #{@type}: " \
+             "definition '#{@definition&.name}'"
+      rescue StandardError => e
+        # SketchUp swallows exceptions raised in activate and silently
+        # drops the tool ("nothing happens"). Surface it instead.
+        puts "[ParaFrame] PlaceTool activate failed: #{e.class}: #{e.message}\n" \
+             "#{e.backtrace.join("\n")}"
+        UI.messagebox("ParaFrame: could not start the placement tool.\n\n" \
+                      "#{e.class}: #{e.message}")
+        Sketchup.active_model.select_tool(nil)
       end
 
       def deactivate(view)

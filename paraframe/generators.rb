@@ -31,11 +31,10 @@ module Kopji
       # the library thumbnails; falls back to generating in-model.
       def definition_for(model, type)
         base = BASE_NAMES.fetch(type)
-        existing = model.definitions[base] ||
-                   model.definitions.find do |d|
-                     d.name.start_with?(base) &&
-                       DCBridge.paraframe_type(d) == type.to_s
-                   end
+        existing = model.definitions[base]
+        existing ||= model.definitions.to_a.find do |d|
+          d.name.start_with?(base) && DCBridge.paraframe_type(d) == type.to_s
+        end
         return existing if existing
 
         rel = type == :window ? File.join('windows', 'casement_basic.skp')
@@ -49,7 +48,15 @@ module Kopji
           end
         end
 
-        type == :window ? CasementWindow.build(model) : PanelDoor.build(model)
+        # Build in its own operation so the fresh geometry is a clean,
+        # undoable transaction rather than loose edits during tool activate.
+        model.start_operation("ParaFrame: build #{type}", true)
+        defn = type == :window ? CasementWindow.build(model) : PanelDoor.build(model)
+        model.commit_operation
+        defn
+      rescue StandardError => e
+        model.abort_operation rescue nil
+        raise e
       end
 
       # Builds window + door, drops preview instances standing upright at
