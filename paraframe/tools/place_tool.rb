@@ -187,6 +187,11 @@ module Kopji
         model = view.model
         model.start_operation("Place ParaFrame #{@type}", true)
         instance = model.active_entities.add_instance(@definition, @transform)
+        # Give each placement its own definition. Otherwise every instance
+        # shares one definition and the DC redraw rebuilds that shared
+        # geometry to the last instance's state, corrupting the earlier
+        # windows ("loses its form").
+        instance.make_unique
         DCBridge.mark_paraframe!(instance, @type)
         # Glue to the face so the native single-face cut fires (multi-layer
         # cutting is added in Phase 5, which will observe this instance).

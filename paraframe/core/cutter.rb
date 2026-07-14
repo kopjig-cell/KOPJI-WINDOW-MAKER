@@ -53,7 +53,12 @@ module Kopji
         model = instance.model
         model.start_operation('ParaFrame Cut', true)
         corners, normal = opening_world(instance)
+        # Hide the component during the scan so the ray finds WALL faces,
+        # not the window's own flush-mounted frame and glass (which the DC
+        # engine would then invalidate mid-cut → "deleted DrawingElement").
+        instance.hidden = true
         layers = scan_layers(model, corners, normal, Settings.cut_depth)
+        instance.hidden = false
         records = layers.filter_map do |layer|
           cut_layer(model, layer, corners, normal)
         end
@@ -61,6 +66,7 @@ module Kopji
         model.commit_operation
         true
       rescue StandardError => e
+        instance.hidden = false if instance.respond_to?(:hidden=) && instance.valid?
         model.abort_operation rescue nil
         puts "[ParaFrame] cut failed: #{e.class}: #{e.message}\n#{e.backtrace.join("\n")}"
         UI.messagebox("ParaFrame: wall cut failed and was rolled back.\n#{e.message}")
@@ -135,17 +141,23 @@ module Kopji
         hits = []
         probe = start
         50.times do
-          res = model.raytest([probe, into], false)
+          # wysiwyg = true so hidden geometry (the component we're cutting
+          # for) is skipped by the ray.
+          res = model.raytest([probe, into], true)
           break unless res
 
           point, path = res
           depth = (center - point) % normal # distance travelled into the wall
           break if depth > max_depth + 2.mm
+          # Always step past this face so the loop can't stall.
+          probe = point.offset(into, 0.2.mm)
           next unless path.last.is_a?(Sketchup::Face)
+          # Ignore any other ParaFrame component the ray grazes.
+          next if path.any? do |e|
+            e.respond_to?(:get_attribute) && DCBridge.paraframe_component?(e)
+          end
 
           hits << [point, path]
-          # Step just past this face to find the next one.
-          probe = point.offset(into, 0.2.mm)
         end
 
         # Pair consecutive hits (enter, exit) into solid layers.
