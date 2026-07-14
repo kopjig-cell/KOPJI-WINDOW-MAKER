@@ -24,7 +24,9 @@ module Kopji
     ICONS = File.join(PATH, 'resources', 'icons').freeze unless defined?(ICONS)
 
     # --- implementation requires -------------------------------------------
+    require File.join(PATH, 'core', 'settings')
     require File.join(PATH, 'core', 'dc_bridge')
+    require File.join(PATH, 'core', 'cutter')
     require File.join(PATH, 'generators')
     require File.join(PATH, 'tools', 'place_tool')
     # Uncommented as each phase lands:
@@ -73,6 +75,21 @@ module Kopji
 
       def cmd_place_door
         activate_place_tool(:door)
+      end
+
+      # Dev helper: run a cutter action on the selected ParaFrame component.
+      def cmd_cutter(action)
+        model = Sketchup.active_model
+        instance = model.selection.grep(Sketchup::ComponentInstance)
+                        .find { |e| DCBridge.paraframe_component?(e) }
+        unless instance
+          UI.messagebox('Select a placed ParaFrame window or door first.')
+          return
+        end
+        Cutter.public_send(action, instance)
+      rescue StandardError => e
+        puts "[ParaFrame] cutter #{action} failed: #{e.class}: #{e.message}"
+        UI.messagebox("ParaFrame cutter #{action} failed:\n#{e.message}")
       end
 
       def activate_place_tool(type)
@@ -140,6 +157,9 @@ module Kopji
         menu.add_separator
         menu.add_item('Generate Components (dev)') { Generators.generate_all }
         menu.add_item('Resize Selected Component (dev)') { cmd_resize_selected }
+        menu.add_item('Cut Selected (dev)') { cmd_cutter(:cut) }
+        menu.add_item('Heal Selected (dev)') { cmd_cutter(:heal) }
+        menu.add_item('Recut Selected (dev)') { cmd_cutter(:recut) }
         menu.add_separator
         menu.add_item('Reload ParaFrame (dev)') { reload }
         menu.add_item('DC Bridge Self-Test (dev)') { DCBridge.self_test }

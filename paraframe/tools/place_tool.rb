@@ -205,6 +205,9 @@ module Kopji
         end
 
         DCBridge.redraw(instance, undo: true)
+
+        # Cut the opening through every wall layer behind the glue plane.
+        Cutter.cut(instance)
         view.invalidate
       rescue StandardError => e
         model.abort_operation rescue nil

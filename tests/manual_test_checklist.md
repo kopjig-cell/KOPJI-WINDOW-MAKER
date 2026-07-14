@@ -96,3 +96,27 @@ up ~2.5 m, ~200 mm thick) to place onto.
       restores the wall face's cut.
 - [ ] With Dynamic Components disabled, Place Window shows the friendly
       "needs Dynamic Components" message instead of starting.
+
+## Phase 5 — wall cutting engine
+
+Setup walls to place onto (try each): (a) a loose-geometry solid wall,
+(b) the same wall made into a Group, (c) a cavity wall = two parallel
+Groups ~50 mm apart, (d) a layered wall = block Group + a thin plaster
+Group either side.
+
+- [ ] Placing a window auto-cuts a clean rectangular hole through the wall,
+      front and back faces, with reveal (jamb/head/sill) faces lining the
+      opening in the wall's material.
+- [ ] Cavity wall: BOTH leaves get cut in one placement. Layered wall: all
+      layers cut, each keeping its own material on the reveals.
+- [ ] Orbit through the opening — no leftover interior faces, no gaps; the
+      wall reads as a proper hole.
+- [ ] **Heal Selected (dev)** on the window refills the wall solid (hole
+      gone). **Cut Selected (dev)** re-cuts it. **Recut Selected (dev)**
+      does heal+cut in one go.
+- [ ] Delete the window, then… (Phase 6 will auto-heal; for now Heal before
+      deleting, or note the hole remains — healing on delete is Phase 6).
+- [ ] A cut failure rolls back cleanly (whole wall intact) with a message,
+      never a half-cut wall.
+- [ ] Cut depth honours the setting (default 600 mm): a wall thicker than
+      the setting is only cut to that depth.
