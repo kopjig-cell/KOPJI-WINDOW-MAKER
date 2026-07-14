@@ -303,12 +303,17 @@ module Kopji
         defn = definition_of(instance)
         t = instance.transformation
         # Current size along the instance's own axes = untransformed
-        # definition extents × the transformation's axis scale factors
-        # (BoundingBox: width=x, depth=y, height=z).
+        # definition extents × the transformation's axis scale factors.
+        # SketchUp BoundingBox axis mapping (easy to get wrong):
+        #   width = X, HEIGHT = Y, DEPTH = Z.
+        # So the component's height (local Y) is db.height, and db.depth is
+        # its Z (frame depth). Getting this backwards divided the target
+        # height by the ~110 mm depth extent instead of the ~1200 mm
+        # height, blowing the height up by ~13x.
         db = defn.bounds
-        current = [db.width * t.xaxis.length,
-                   db.depth * t.yaxis.length,
-                   db.height * t.zaxis.length]
+        current = [db.width  * t.xaxis.length,  # X = width
+                   db.height * t.yaxis.length,  # Y = height
+                   db.depth  * t.zaxis.length]  # Z = frame depth
         targets = [lenx, leny, lenz]
         factors = targets.each_with_index.map do |target, i|
           target.nil? || current[i].zero? ? 1.0 : target.to_f / current[i]

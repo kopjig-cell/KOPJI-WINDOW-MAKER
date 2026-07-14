@@ -101,8 +101,9 @@ module Kopji
         end
         t = instance.transformation
         db = instance.definition.bounds
-        current_w = db.width * t.xaxis.length
-        current_h = db.depth * t.yaxis.length
+        # SketchUp BoundingBox: width = X, height = Y, depth = Z.
+        current_w = db.width  * t.xaxis.length # X = width
+        current_h = db.height * t.yaxis.length # Y = height
         input = UI.inputbox(['Width (mm)', 'Height (mm)'],
                             [DCBridge.inch_to_mm(current_w).round,
                              DCBridge.inch_to_mm(current_h).round],
