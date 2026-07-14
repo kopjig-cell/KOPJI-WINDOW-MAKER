@@ -26,6 +26,7 @@ module Kopji
     # --- implementation requires -------------------------------------------
     require File.join(PATH, 'core', 'dc_bridge')
     require File.join(PATH, 'generators')
+    require File.join(PATH, 'tools', 'place_tool')
     # Uncommented as each phase lands:
     # require File.join(PATH, 'core',  'settings')
     # require File.join(PATH, 'core',  'cutter')
@@ -67,11 +68,20 @@ module Kopji
       # smoke test that the command wiring works.
 
       def cmd_place_window
-        placeholder('Place Window', 'Phase 4 (placement tool)')
+        activate_place_tool(:window)
       end
 
       def cmd_place_door
-        placeholder('Place Door', 'Phase 4 (placement tool)')
+        activate_place_tool(:door)
+      end
+
+      def activate_place_tool(type)
+        return unless DCBridge.ensure_dc!
+
+        Sketchup.active_model.select_tool(PlaceTool.new(type))
+      rescue StandardError => e
+        puts "[ParaFrame] could not start placement tool: #{e.class}: #{e.message}"
+        UI.messagebox("ParaFrame: could not start the placement tool.\n#{e.message}")
       end
 
       def cmd_library

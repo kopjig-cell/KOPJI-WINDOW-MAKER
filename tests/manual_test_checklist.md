@@ -72,3 +72,27 @@ phase; the full end-to-end matrix lands in Phase 10.
       1000 × 2200 keeps 60 mm frame members.
 - [ ] Both .skp files exist on disk and open standalone in SketchUp
       (File → Open) showing the same parametric behavior.
+
+## Phase 4 — placement tool
+
+Setup: draw a simple vertical wall (a rectangle on the ground, push-pulled
+up ~2.5 m, ~200 mm thick) to place onto.
+
+- [ ] **Place Window** (menu or toolbar) starts the tool; a blue wireframe
+      ghost of the window follows the cursor and snaps flat onto a wall
+      face, oriented upright and centred on the cursor.
+- [ ] Moving over the floor or empty space shows no ghost (only near-
+      vertical faces are valid); the status bar explains what to do.
+- [ ] Click on the wall places a real window, glued to the face, with its
+      base ~900 mm above Z=0; the native cut opens a hole in that one face.
+- [ ] The tool stays active — a second click places another window. Esc
+      exits the tool (first Esc clears a typed size, second exits).
+- [ ] Before clicking, type `1500` in the VCB (bottom-right) → ghost width
+      becomes 1500 mm; type `1500;2000` → width 1500, height 2000; place
+      and measure to confirm.
+- [ ] **Place Door** behaves the same but the door sits on the floor
+      (base at Z=0) and has no sill.
+- [ ] Each placement is a single Undo step; Undo removes the instance and
+      restores the wall face's cut.
+- [ ] With Dynamic Components disabled, Place Window shows the friendly
+      "needs Dynamic Components" message instead of starting.

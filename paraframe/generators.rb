@@ -20,7 +20,37 @@ module Kopji
   module ParaFrame
     module Generators
 
+      # Base definition names, keyed by ParaFrame type.
+      BASE_NAMES = { window: 'PF_Casement', door: 'PF_PanelDoor' }.freeze
+
       module_function
+
+      # Returns a definition for +type+ (:window/:door) to place, reusing
+      # one already in the model when possible, otherwise building it.
+      # Prefers a bundled .skp (shipped in the .rbz) so placements match
+      # the library thumbnails; falls back to generating in-model.
+      def definition_for(model, type)
+        base = BASE_NAMES.fetch(type)
+        existing = model.definitions[base] ||
+                   model.definitions.find do |d|
+                     d.name.start_with?(base) &&
+                       DCBridge.paraframe_type(d) == type.to_s
+                   end
+        return existing if existing
+
+        rel = type == :window ? File.join('windows', 'casement_basic.skp')
+                              : File.join('doors', 'door_single.skp')
+        skp = File.join(PATH, 'components', rel)
+        if File.exist?(skp)
+          begin
+            return model.definitions.load(skp)
+          rescue StandardError => e
+            puts "[ParaFrame] could not load #{skp}: #{e.message}; building instead"
+          end
+        end
+
+        type == :window ? CasementWindow.build(model) : PanelDoor.build(model)
+      end
 
       # Builds window + door, drops preview instances standing upright at
       # the origin, and saves the .skp files. One undo step for the model

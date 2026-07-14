@@ -67,7 +67,7 @@ before the next begins.
 | 1 | Scaffold, menu, toolbar, packaging | ✅ |
 | 2 | DC bridge (dynamic_attributes read/write, redraw) | ✅ |
 | 3 | Generated casement window + door dynamic components | ✅ |
-| 4 | Placement tool (ghost preview, glue-to-face) | — |
+| 4 | Placement tool (ghost preview, glue-to-face) | ✅ |
 | 5 | Multi-layer wall cutting + healing engine | — |
 | 6 | Observers (move/scale/erase → recut/heal) | — |
 | 7 | Configuration dialog | — |
