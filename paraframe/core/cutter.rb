@@ -309,7 +309,10 @@ module Kopji
 
       def heal_layer(model, layer)
         ents, tr = resolve_container_by_ids(model, layer['container'])
-        return unless ents
+        unless ents
+          puts "[ParaFrame] heal: container #{layer['container'].inspect} not found"
+          return
+        end
 
         ti = tr.inverse
         front = layer['front'].map { |a| Geom::Point3d.new(*a).transform(ti) }
@@ -317,18 +320,57 @@ module Kopji
         material = model.materials[layer['material']] if layer['material']
 
         # Delete the four reveal faces, then refill the two openings.
+        reveals = 0
         4.times do |k|
           quad = [front[k], front[(k + 1) % 4], back[(k + 1) % 4], back[k]]
           f = find_face(ents, quad)
-          f&.erase!
+          next unless f
+
+          f.erase!
+          reveals += 1
         end
+        filled = 0
         [front, back].each do |quad|
           face = ents.add_face(quad)
-          if face && material
+          next unless face
+
+          filled += 1
+          if material
             face.material = material
             face.back_material = material
           end
         end
+        cleanup_scars(ents, front, back)
+        puts "[ParaFrame] heal layer: reveals erased #{reveals}/4, " \
+             "openings refilled #{filled}/2"
+      end
+
+      # After refilling, the opening's outline is still scribed on the wall
+      # (the refilled face is fenced off by the old hole edges) and the
+      # reveals' corner edges float faceless. Erase both kinds so the wall
+      # face merges back to a single clean face.
+      def cleanup_scars(ents, front, back)
+        box = Geom::BoundingBox.new
+        (front + back).each { |p| box.add(p) }
+        tol = EPS * 10
+        scars = ents.grep(Sketchup::Edge).select do |e|
+          next false unless e.valid?
+          next false unless box_contains?(box, e.start.position, tol) &&
+                            box_contains?(box, e.end.position, tol)
+
+          faces = e.faces
+          # Faceless leftovers, or an edge splitting two coplanar faces —
+          # erasing the latter merges the refill into the wall face.
+          faces.empty? ||
+            (faces.length == 2 && faces[0].normal.parallel?(faces[1].normal))
+        end
+        ents.erase_entities(scars) unless scars.empty?
+      end
+
+      def box_contains?(box, point, tol)
+        point.x >= box.min.x - tol && point.x <= box.max.x + tol &&
+          point.y >= box.min.y - tol && point.y <= box.max.y + tol &&
+          point.z >= box.min.z - tol && point.z <= box.max.z + tol
       end
 
       # ----------------------------------------------------- container paths

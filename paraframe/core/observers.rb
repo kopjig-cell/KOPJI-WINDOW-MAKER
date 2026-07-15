@@ -53,6 +53,15 @@ module Kopji
         def onChangeEntity(entity)
           Observers.entity_changed(entity)
         end
+
+        # Fires for the exact instance we observe — a reliable erase signal
+        # even when the model-level onElementRemoved reports an id we are
+        # not keyed on.
+        def onEraseEntity(entity)
+          Observers.entity_erased(entity)
+        rescue StandardError => e
+          puts "[ParaFrame] onEraseEntity: #{e.class}: #{e.message}"
+        end
       end
 
       class PFEntitiesObserver < Sketchup::EntitiesObserver
@@ -138,8 +147,16 @@ module Kopji
             instance.add_observer(singleton(:entity) { PFEntityObserver.new })
           end
           st[:instance] = instance
+          st[:model]    = model
           st[:matrix]   = instance.transformation.to_a
           st[:record]   = Cutter.raw_record(instance)
+          n = begin
+            JSON.parse(st[:record] || '[]').length
+          rescue JSON::ParserError
+            0
+          end
+          puts "[ParaFrame] watch ##{instance.entityID} " \
+               "(#{DCBridge.paraframe_type(instance)}): #{n} cut layer(s) cached"
           nil
         end
 
@@ -161,14 +178,65 @@ module Kopji
 
           key = model.guid
           st = STATE[:watched].dig(key, entity_id)
-          return unless st
+          unless st
+            # Not one we watch by this id — but it may still be a stale id
+            # from a swapped instance. Reconcile below in reconcile_watched.
+            reconcile_watched(model)
+            return
+          end
 
-          STATE[:watched][key].delete(entity_id)
+          queue_heal(model, entity_id, st, 'onElementRemoved')
+        end
+
+        # Backstop: the EntityObserver fires for the exact instance we
+        # watch, so this catches erases even if the model-level id lookup
+        # missed.
+        def entity_erased(entity)
+          id = begin
+            entity.entityID
+          rescue StandardError
+            nil
+          end
+          STATE[:watched].each do |key, map|
+            model = map.values.first&.dig(:model)
+            st = id && map[id]
+            st ||= map.values.find { |s| !instance_alive?(s[:instance]) }
+            next unless st && model
+
+            real_id = map.key(st)
+            queue_heal(model, real_id, st, 'onEraseEntity')
+          end
+        end
+
+        def queue_heal(model, entity_id, st, source)
+          key = model.guid
+          STATE[:watched][key]&.delete(entity_id)
           record = st[:record]
+          n = record ? (JSON.parse(record).length rescue 0) : 0
+          puts "[ParaFrame] erase ##{entity_id} via #{source}: healing #{n} layer(s)"
           if record && record != '[]'
             (STATE[:heal_queue][key] ||= []) << record
             schedule(model)
           end
+        rescue StandardError => e
+          puts "[ParaFrame] queue_heal: #{e.class}: #{e.message}"
+        end
+
+        # Drops watched entries whose instance is gone, healing each.
+        def reconcile_watched(model)
+          key = model.guid
+          map = STATE[:watched][key] || {}
+          map.to_a.each do |id, st|
+            next if instance_alive?(st[:instance])
+
+            queue_heal(model, id, st, 'reconcile')
+          end
+        end
+
+        def instance_alive?(inst)
+          inst && inst.valid?
+        rescue StandardError
+          false
         end
 
         # After undo/redo the model already holds the correct state —
