@@ -177,6 +177,10 @@ module Kopji
         origin = Geom::Point3d.new(point.x, point.y, base_z)
         # Centre the component horizontally on the cursor.
         origin = origin.offset(along, -width / 2.0)
+        # Sink the unit into the wall by its reveal depth so the frame sits
+        # back from the facade instead of flush with it.
+        reveal = reveal_depth
+        origin = origin.offset(n, -reveal) if reveal > 0
 
         Geom::Transformation.axes(origin, along, up, n)
       end
@@ -243,6 +247,12 @@ module Kopji
 
         raw = @definition.get_attribute(DCBridge::DICT_DC, 'sillheight')
         raw ? raw.to_f : 900.mm
+      end
+
+      # How far the unit sets back from the wall face (inches).
+      def reveal_depth
+        raw = @definition.get_attribute(DCBridge::DICT_DC, 'revealdepth')
+        raw ? raw.to_f : 0.0
       end
 
       # Eight corners of the (possibly overridden) ghost box in world space.

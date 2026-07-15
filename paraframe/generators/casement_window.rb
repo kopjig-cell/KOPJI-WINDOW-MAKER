@@ -39,8 +39,12 @@ module Kopji
       PANELS       = 2
       SILL_HEIGHT  = 900
       GLASS_T      = 4
-      SILL_D       = 40
+      # Sill reaches from the glue plane out past the facade: with the
+      # default 50 mm reveal it still projects 50 mm beyond the wall face.
+      SILL_D       = 100
       SILL_T       = 30
+      # How far the unit sits back from the wall's outer face when placed.
+      REVEAL_DEPTH = 50
 
       module_function
 
@@ -75,6 +79,8 @@ module Kopji
         DCBridge.declare_input(defn, :glassthickness, gt, formlabel: 'Glass Thickness')
         DCBridge.declare_input(defn, :silldepth, sd, formlabel: 'Sill Depth')
         DCBridge.declare_input(defn, :sillthickness, st, formlabel: 'Sill Thickness')
+        DCBridge.declare_input(defn, :revealdepth, REVEAL_DEPTH.mm,
+                               formlabel: 'Reveal Depth (placement)')
 
         # --- frame: two jambs, head, bottom rail ---------------------------
         jamb_l = Builder.box_child(model, defn, 'PF_Casement_JambL',

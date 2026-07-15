@@ -66,9 +66,13 @@ module Kopji
         model.start_operation('ParaFrame Cut', true)
         corners, normal = opening_world(instance)
         depth = Settings.cut_depth
+        # Components sit back from the facade by their reveal depth, so the
+        # wall's OUTER face lies in front of the glue plane (negative
+        # depth). Reach back that far (plus slop) when hunting for faces.
+        back = DCBridge.get_attr(instance, :revealdepth, 0).to_f + 1.mm
         records = []
-        collect_targets(model, instance, corners, normal, depth).each do |ents, tr, ids|
-          faces = matching_faces(ents, tr, corners, normal, depth)
+        collect_targets(model, instance, corners, normal, depth, back).each do |ents, tr, ids|
+          faces = matching_faces(ents, tr, corners, normal, depth, back)
           pair_faces(faces).each do |(front_face, d0), (_back_face, d1)|
             records << cut_slab(ents, tr, ids, front_face, d0, d1, corners, normal)
           end
@@ -148,13 +152,13 @@ module Kopji
       # the opening's swept box. Shared definitions are made unique so a
       # cut never bleeds into sibling copies. Returns
       # [[entities, to_world_transform, persistent_id_path], ...].
-      def collect_targets(model, skip_instance, corners, normal, depth)
+      def collect_targets(model, skip_instance, corners, normal, depth, back = 0)
         targets = [[model.entities, Geom::Transformation.new, []]]
         model.entities.each do |e|
           next unless e.is_a?(Sketchup::Group) || e.is_a?(Sketchup::ComponentInstance)
           next if e.equal?(skip_instance)
           next if DCBridge.paraframe_component?(e)
-          next unless bounds_overlap?(e.bounds, corners, normal, depth)
+          next unless bounds_overlap?(e.bounds, corners, normal, depth, back)
 
           e.make_unique if e.definition.count_instances > 1
           targets << [e.definition.entities, e.transformation, [e.persistent_id]]
@@ -162,10 +166,12 @@ module Kopji
         targets
       end
 
-      # Does +bounds+ intersect the box swept by the opening to +depth+?
-      def bounds_overlap?(bounds, corners, normal, depth)
+      # Does +bounds+ intersect the box swept by the opening from +back+ in
+      # front of the glue plane to +depth+ behind it?
+      def bounds_overlap?(bounds, corners, normal, depth, back = 0)
         swept = Geom::BoundingBox.new
         corners.each do |p|
+          swept.add(p.offset(normal, back)) if back > 0
           swept.add(p)
           swept.add(p.offset(normal, -depth))
         end
@@ -179,7 +185,7 @@ module Kopji
       # the opening rectangle, and lie within the cut depth — i.e. the
       # layer boundaries the opening must punch through. Returns
       # [[face, depth], ...] sorted front to back.
-      def matching_faces(ents, tr, corners, normal, max_depth)
+      def matching_faces(ents, tr, corners, normal, max_depth, back = 0)
         ti = tr.inverse
         lc = corners.map { |p| p.transform(ti) }
         ln = normal.clone.transform(ti)
@@ -199,8 +205,10 @@ module Kopji
 
           # Depth of the face plane measured from the glue plane into the
           # wall (all face vertices are coplanar; the first will do).
+          # Negative depths reach back to the facade in front of a
+          # recessed (revealdepth) glue plane.
           d = origin.vector_to(face.vertices.first.position) % into
-          next unless d > -margin && d <= max_depth
+          next unless d > -(back + margin) && d <= max_depth
 
           # 2D overlap: the face's extent along the opening's in-plane axes
           # must overlap the opening rectangle [0,w] × [0,h].

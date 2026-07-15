@@ -55,6 +55,8 @@ module Kopji
         # Doors are placed with their base on the floor; hidden from the
         # native Options dialog (placement-tool input only).
         DCBridge.declare_input(defn, :sillheight, 0.0, access: nil)
+        DCBridge.declare_input(defn, :revealdepth, 50.mm,
+                               formlabel: 'Reveal Depth (placement)')
 
         # --- frame: two full-height jambs + head ----------------------------
         jamb_l = Builder.box_child(model, defn, 'PF_Door_JambL',
