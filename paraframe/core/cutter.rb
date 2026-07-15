@@ -151,23 +151,54 @@ module Kopji
           break if depth > max_depth + 2.mm
           # Always step past this face so the loop can't stall.
           probe = point.offset(into, 0.2.mm)
-          next unless path.last.is_a?(Sketchup::Face)
+          face = path.last
+          next unless face.is_a?(Sketchup::Face)
           # Ignore any other ParaFrame component the ray grazes.
           next if path.any? do |e|
             e.respond_to?(:get_attribute) && DCBridge.paraframe_component?(e)
           end
 
-          hits << [point, path]
+          # facing < 0 → the ray enters a solid here (front face);
+          # facing > 0 → the ray exits a solid here (back face). Comparing
+          # the world-space face normal to the ray direction is robust for
+          # cavity/layered walls, where naive pair-by-two mis-groups leaves.
+          facing = world_normal(face, path) % into
+          hits << { point: point, path: path, facing: facing }
         end
 
-        # Pair consecutive hits (enter, exit) into solid layers.
+        pair_layers(hits)
+      end
+
+      # Pairs each entering face with the next exiting face into solid
+      # layers: [front_pt, front_path, back_pt, back_path].
+      def pair_layers(hits)
         layers = []
         i = 0
-        while i + 1 < hits.length
-          layers << [hits[i][0], hits[i][1], hits[i + 1][0], hits[i + 1][1]]
-          i += 2
+        while i < hits.length
+          unless hits[i][:facing] < 0 # not an entry face; skip
+            i += 1
+            next
+          end
+
+          j = i + 1
+          j += 1 while j < hits.length && hits[j][:facing] < 0 # next exit
+          break if j >= hits.length
+
+          layers << [hits[i][:point], hits[i][:path], hits[j][:point], hits[j][:path]]
+          i = j + 1
         end
         layers
+      end
+
+      # World-space normal of a face given its raytest path (container
+      # instances precede the face). Rigid container transforms only, which
+      # is the norm for walls.
+      def world_normal(face, path)
+        tr = Geom::Transformation.new
+        path[0...-1].each do |e|
+          tr *= e.transformation if e.respond_to?(:transformation)
+        end
+        face.normal.transform(tr).normalize
       end
 
       # --------------------------------------------------------- cut a layer

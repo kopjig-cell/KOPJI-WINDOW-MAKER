@@ -193,12 +193,18 @@ module Kopji
         # windows ("loses its form").
         instance.make_unique
         DCBridge.mark_paraframe!(instance, @type)
-        # Glue to the face so the native single-face cut fires (multi-layer
-        # cutting is added in Phase 5, which will observe this instance).
-        begin
-          instance.glued_to = @face
-        rescue StandardError => e
-          puts "[ParaFrame] glue failed: #{e.message}"
+        # Glue to the face only when it is loose in the model root — you
+        # cannot glue a root instance to a face inside a group/component
+        # (SketchUp raises "can only glue to something in the same
+        # component"). ParaFrame's own cutter and the Phase 6 observers
+        # track the opening for grouped walls, so gluing is a nicety, not a
+        # requirement.
+        if @face.parent.is_a?(Sketchup::Model)
+          begin
+            instance.glued_to = @face
+          rescue StandardError => e
+            puts "[ParaFrame] glue skipped: #{e.message}"
+          end
         end
         model.commit_operation
 
