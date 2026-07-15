@@ -69,7 +69,7 @@ before the next begins.
 | 3 | Generated casement window + door dynamic components | ✅ |
 | 4 | Placement tool (ghost preview, glue-to-face) | ✅ |
 | 5 | Multi-layer wall cutting + healing engine | ✅ |
-| 6 | Observers (move/scale/erase → recut/heal) | — |
+| 6 | Observers (move/scale/erase → recut/heal) | ✅ |
 | 7 | Configuration dialog | — |
 | 8 | Component library dialog | — |
 | 9 | Plan view mode | — |

@@ -120,3 +120,24 @@ Group either side.
       never a half-cut wall.
 - [ ] Cut depth honours the setting (default 600 mm): a wall thicker than
       the setting is only cut to that depth.
+
+## Phase 6 — observers (live behavior)
+
+Setup: a solid wall with one placed window (cut opening present).
+
+- [ ] **Delete** the window (select + Del): ~0.2 s later the wall heals
+      itself back to solid, automatically.
+- [ ] **Move** the window along the wall with the Move tool: the old
+      opening heals and a new one is cut at the new position.
+- [ ] **Scale** the window with the Scale tool (drag a corner/edge grip):
+      after release, the frame members snap back to 70 mm (DC redraw),
+      the mullion re-spaces, and the opening is recut to the new size.
+- [ ] Rapid wiggling with the Move tool does not spam operations — the
+      recut happens once after you stop (debounced).
+- [ ] **Undo** after each of the above returns the model to the prior
+      state without the observers fighting back (no surprise recuts right
+      after an undo). Note: delete-then-auto-heal is two undo steps
+      (heal, then the delete itself).
+- [ ] Save the model with placed windows, close, reopen: moving/deleting
+      a window still heals/recuts (observers re-attach on open).
+- [ ] Ruby Console stays free of ParaFrame errors during all of the above.

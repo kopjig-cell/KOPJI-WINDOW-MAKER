@@ -27,6 +27,7 @@ module Kopji
     require File.join(PATH, 'core', 'settings')
     require File.join(PATH, 'core', 'dc_bridge')
     require File.join(PATH, 'core', 'cutter')
+    require File.join(PATH, 'core', 'observers')
     require File.join(PATH, 'generators')
     require File.join(PATH, 'tools', 'place_tool')
     # Uncommented as each phase lands:
@@ -231,6 +232,9 @@ module Kopji
       install_ui
       file_loaded(__FILE__)
     end
+    # Idempotent (guarded inside), so safe on dev reloads too: keeps wall
+    # openings tracking their components (move/scale/erase/undo).
+    Observers.install
 
   end # module ParaFrame
 end # module Kopji

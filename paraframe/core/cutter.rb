@@ -79,6 +79,8 @@ module Kopji
         end
         store_record(instance, records.compact)
         model.commit_operation
+        # Track the instance so move/scale/erase keep the opening in sync.
+        Observers.watch(instance) if defined?(Observers)
         true
       rescue StandardError => e
         model.abort_operation rescue nil
@@ -94,10 +96,19 @@ module Kopji
         record = load_record(instance)
         return true if record.nil? || record.empty?
 
-        model = instance.model
+        heal_records(instance.model, record, -> { clear_record(instance) })
+      end
+
+      # Heals from record data directly — used by the observers to heal
+      # the wall after the instance itself has been erased (its dictionary
+      # goes with it, so the observers keep a cached copy). +extra+ runs
+      # inside the same operation (e.g. clearing the record attribute).
+      def heal_records(model, records, extra = nil)
+        return true if records.nil? || records.empty?
+
         model.start_operation('ParaFrame Heal', true)
-        record.each { |layer| heal_layer(model, layer) }
-        clear_record(instance)
+        records.each { |layer| heal_layer(model, layer) }
+        extra&.call
         model.commit_operation
         true
       rescue StandardError => e
@@ -343,10 +354,15 @@ module Kopji
       end
 
       def load_record(instance)
-        raw = instance.get_attribute(DCBridge::DICT_PF, KEY_CUT)
+        raw = raw_record(instance)
         raw ? JSON.parse(raw) : nil
       rescue JSON::ParserError
         nil
+      end
+
+      # The record as its raw JSON string (for the observers' cache).
+      def raw_record(instance)
+        instance.get_attribute(DCBridge::DICT_PF, KEY_CUT)
       end
 
       def clear_record(instance)
