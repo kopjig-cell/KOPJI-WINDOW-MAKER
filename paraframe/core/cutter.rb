@@ -53,6 +53,9 @@ module Kopji
       # Numeric slop for coplanar / point-match tests (inches).
       EPS = 0.001
 
+      # Minimum distinct slab thickness / depth separation (inches, ~0.5 mm).
+      SLAB_MIN = 0.02
+
       module_function
 
       # ------------------------------------------------------------- public
@@ -230,15 +233,29 @@ module Kopji
 
           [face, d]
         end
-        found.sort_by { |(_f, d)| d }
+        dedupe_by_depth(found.sort_by { |(_f, d)| d })
+      end
+
+      # Keeps one boundary face per distinct depth plane. Two coplanar
+      # faces at the same depth (a common result of prior cuts or touching
+      # skins) would otherwise pair into a zero-thickness slab whose reveal
+      # quads collapse to duplicate points — the "Duplicate points in
+      # array" cut failure.
+      def dedupe_by_depth(faces)
+        kept = []
+        faces.each do |face, d|
+          kept << [face, d] unless kept.any? { |(_f, dk)| (dk - d).abs < SLAB_MIN }
+        end
+        kept
       end
 
       # Consecutive depth-sorted boundary faces bound one slab each:
       # n faces → n-1 slabs. (A plain wall: front+back → 1 slab. A block
       # with internal partitions: every gap gets punched and lined, so the
-      # opening reads as a continuous lined tunnel.)
+      # opening reads as a continuous lined tunnel.) Zero/near-zero
+      # thickness pairs are dropped defensively.
       def pair_faces(faces)
-        faces.each_cons(2).to_a
+        faces.each_cons(2).reject { |(_f0, d0), (_f1, d1)| (d1 - d0).abs < SLAB_MIN }
       end
 
       # --------------------------------------------------------- cut a slab
@@ -270,7 +287,7 @@ module Kopji
       # the face we got back is quad-sized — erasing a merged/outer face
       # would remove the wall itself.
       def punch(ents, quad)
-        face = ents.add_face(quad)
+        face = safe_add_face(ents, quad)
         return unless face
 
         expected = quad_area(quad)
@@ -297,7 +314,7 @@ module Kopji
           b = front[(k + 1) % 4]
           c = back[(k + 1) % 4]
           d = back[k]
-          face = ents.add_face(a, b, c, d)
+          face = safe_add_face(ents, [a, b, c, d])
           next unless face && material
 
           face.material = material
@@ -331,7 +348,7 @@ module Kopji
         end
         filled = 0
         [front, back].each do |quad|
-          face = ents.add_face(quad)
+          face = safe_add_face(ents, quad)
           next unless face
 
           filled += 1
@@ -418,6 +435,28 @@ module Kopji
         return nil unless face.is_a?(Sketchup::Face)
 
         face.material || face.back_material
+      end
+
+      # add_face that never raises on degenerate input: coincident
+      # consecutive points are dropped, and a loop with fewer than three
+      # distinct points is skipped (returns nil) instead of throwing
+      # "Duplicate points in array" and rolling back the whole cut.
+      def safe_add_face(ents, points)
+        clean = []
+        points.each do |p|
+          prev = clean.last || points.last
+          clean << p unless coincident?(p, prev)
+        end
+        return nil if clean.length < 3
+
+        ents.add_face(clean)
+      rescue ArgumentError => e
+        puts "[ParaFrame] safe_add_face skipped: #{e.message}"
+        nil
+      end
+
+      def coincident?(a, b)
+        (a.x - b.x).abs < EPS && (a.y - b.y).abs < EPS && (a.z - b.z).abs < EPS
       end
 
       # Finds a face in +ents+ whose vertices match the given points (any
