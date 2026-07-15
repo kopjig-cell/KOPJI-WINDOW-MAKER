@@ -6,27 +6,39 @@
 # component is glued to, and only when that face is a loose face in the same
 # drawing context. Real walls are grouped, layered (block + plaster skins),
 # or cavity constructions (two parallel leaves). This engine cuts a clean
-# rectangular opening through EVERY solid layer the component passes into,
-# records what it did, and can heal the wall back to solid when the
-# component is moved or deleted.
+# rectangular opening through EVERY wall layer behind the component, records
+# what it did, and can heal the wall back to solid when the component is
+# moved or deleted.
 #
-# Geometry model
-# --------------
-# A ParaFrame component is authored flat: its local Z axis is the outward
-# wall normal, and its local Z = 0 plane (the "glue plane") sits on the wall
-# face. The opening is the LenX x LenY rectangle on that plane, extruded
-# along -Z (into the wall). We march a ray from just outside the glue plane
-# straight into the wall and collect the faces it pierces; each consecutive
-# pair of hits (enter, exit) is one solid layer. For each layer we punch the
-# opening through its front and back faces and add the four reveal faces
-# that line the hole.
+# How layers are found (v2 — face collection, not ray marching)
+# -------------------------------------------------------------
+# A ParaFrame component is authored flat: local Z is the outward wall
+# normal, the local Z = 0 plane (the "glue plane") sits on the wall face,
+# and the opening is the LenX × LenY rectangle on that plane extruded along
+# -Z into the wall, to at most the configured cut depth.
 #
-# Everything a cut touched is recorded (per layer: the container path by
-# persistent id, the front and back opening rectangles, the wall material)
-# so heal can refill the faces and delete the reveals.
+# Ray marching (v1) failed on real walls: coincident faces where a plaster
+# skin touches the block get skipped by the ray's step-over, and cavity
+# leaves confused hit pairing. Instead we now treat every drawing context
+# independently:
 #
-# All of cut / heal / recut run inside a single model operation and roll
-# back with abort_operation on any failure.
+#   * candidates = the model's loose geometry + every top-level group /
+#     component whose bounds intersect the opening's swept box (excluding
+#     ParaFrame components themselves),
+#   * shared-definition containers are made unique first — cutting a copied
+#     wall group must not edit its siblings (this was eating whole faces:
+#     two leaves of a cavity wall sharing a definition each got both cuts),
+#   * within one context, every face parallel to the glue plane that
+#     overlaps the opening rectangle and lies within the cut depth is a
+#     layer boundary; sorted by depth, each consecutive pair bounds one
+#     slab of wall,
+#   * each slab gets the opening punched through both bounding faces and
+#     four reveal faces lining the hole, in the wall's material.
+#
+# Heal records (per slab: container persistent-id path, front/back opening
+# quads in world space, material name) are stored as JSON in the instance's
+# "ParaFrame" dictionary. cut / heal / recut each run inside one model
+# operation and roll back with abort_operation on failure.
 
 require 'sketchup.rb'
 require 'json'
@@ -45,7 +57,7 @@ module Kopji
 
       # ------------------------------------------------------------- public
 
-      # Cuts the opening for +instance+ through every solid layer behind its
+      # Cuts the opening for +instance+ through every wall layer behind its
       # glue plane. Stores a cut record. Returns true on success.
       def cut(instance)
         return false unless DCBridge.paraframe_component?(instance)
@@ -53,20 +65,18 @@ module Kopji
         model = instance.model
         model.start_operation('ParaFrame Cut', true)
         corners, normal = opening_world(instance)
-        # Hide the component during the scan so the ray finds WALL faces,
-        # not the window's own flush-mounted frame and glass (which the DC
-        # engine would then invalidate mid-cut → "deleted DrawingElement").
-        instance.hidden = true
-        layers = scan_layers(model, corners, normal, Settings.cut_depth)
-        instance.hidden = false
-        records = layers.filter_map do |layer|
-          cut_layer(model, layer, corners, normal)
+        depth = Settings.cut_depth
+        records = []
+        collect_targets(model, instance, corners, normal, depth).each do |ents, tr, ids|
+          faces = matching_faces(ents, tr, corners, normal, depth)
+          pair_faces(faces).each do |(front_face, d0), (_back_face, d1)|
+            records << cut_slab(ents, tr, ids, front_face, d0, d1, corners, normal)
+          end
         end
-        store_record(instance, records)
+        store_record(instance, records.compact)
         model.commit_operation
         true
       rescue StandardError => e
-        instance.hidden = false if instance.respond_to?(:hidden=) && instance.valid?
         model.abort_operation rescue nil
         puts "[ParaFrame] cut failed: #{e.class}: #{e.message}\n#{e.backtrace.join("\n")}"
         UI.messagebox("ParaFrame: wall cut failed and was rolled back.\n#{e.message}")
@@ -94,9 +104,7 @@ module Kopji
       end
 
       # Heal + cut: used after a move or resize so the opening tracks the
-      # component. One combined operation would be ideal, but heal and cut
-      # each need their own commit for the DC/undo bookkeeping to settle, so
-      # this is two undo steps.
+      # component.
       def recut(instance)
         heal(instance) && cut(instance)
       end
@@ -128,95 +136,100 @@ module Kopji
         [corners, t.zaxis.normalize]
       end
 
+      # The opening corners pushed +d+ into the wall (world space).
+      def project_depth(corners, normal, d)
+        corners.map { |p| p.offset(normal, -d) }
+      end
+
+      # ------------------------------------------------------ target finder
+
+      # Drawing contexts that may contain wall layers: the model's loose
+      # geometry plus every top-level group/component instance overlapping
+      # the opening's swept box. Shared definitions are made unique so a
+      # cut never bleeds into sibling copies. Returns
+      # [[entities, to_world_transform, persistent_id_path], ...].
+      def collect_targets(model, skip_instance, corners, normal, depth)
+        targets = [[model.entities, Geom::Transformation.new, []]]
+        model.entities.each do |e|
+          next unless e.is_a?(Sketchup::Group) || e.is_a?(Sketchup::ComponentInstance)
+          next if e.equal?(skip_instance)
+          next if DCBridge.paraframe_component?(e)
+          next unless bounds_overlap?(e.bounds, corners, normal, depth)
+
+          e.make_unique if e.definition.count_instances > 1
+          targets << [e.definition.entities, e.transformation, [e.persistent_id]]
+        end
+        targets
+      end
+
+      # Does +bounds+ intersect the box swept by the opening to +depth+?
+      def bounds_overlap?(bounds, corners, normal, depth)
+        swept = Geom::BoundingBox.new
+        corners.each do |p|
+          swept.add(p)
+          swept.add(p.offset(normal, -depth))
+        end
+        inter = bounds.intersect(swept)
+        inter.valid? && inter.diagonal > EPS
+      end
+
       # ------------------------------------------------------- layer finder
 
-      # Marches a ray from just outside the glue plane straight into the
-      # wall, collecting pierced faces up to +max_depth+. Returns an array
-      # of layers, each [front_hit, front_path, back_hit, back_path], where
-      # a *_path is the Sketchup raytest path (container instances + face).
-      def scan_layers(model, corners, normal, max_depth)
-        center = centroid(corners)
-        into = normal.reverse
-        start = center.offset(normal, 2.mm) # begin just outside the wall
-        hits = []
-        probe = start
-        50.times do
-          # wysiwyg = true so hidden geometry (the component we're cutting
-          # for) is skipped by the ray.
-          res = model.raytest([probe, into], true)
-          break unless res
+      # Faces of one context that are parallel to the glue plane, overlap
+      # the opening rectangle, and lie within the cut depth — i.e. the
+      # layer boundaries the opening must punch through. Returns
+      # [[face, depth], ...] sorted front to back.
+      def matching_faces(ents, tr, corners, normal, max_depth)
+        ti = tr.inverse
+        lc = corners.map { |p| p.transform(ti) }
+        ln = normal.clone.transform(ti)
+        ln.normalize!
+        origin = lc[0]
+        xaxis = origin.vector_to(lc[1])
+        w = xaxis.length
+        xaxis.normalize!
+        yaxis = origin.vector_to(lc[3])
+        h = yaxis.length
+        yaxis.normalize!
+        into = ln.reverse
+        margin = 1.mm
 
-          point, path = res
-          depth = (center - point) % normal # distance travelled into the wall
-          break if depth > max_depth + 2.mm
-          # Always step past this face so the loop can't stall.
-          probe = point.offset(into, 0.2.mm)
-          face = path.last
-          next unless face.is_a?(Sketchup::Face)
-          # Ignore any other ParaFrame component the ray grazes.
-          next if path.any? do |e|
-            e.respond_to?(:get_attribute) && DCBridge.paraframe_component?(e)
-          end
+        found = ents.grep(Sketchup::Face).filter_map do |face|
+          next unless face.normal.parallel?(ln)
 
-          # facing < 0 → the ray enters a solid here (front face);
-          # facing > 0 → the ray exits a solid here (back face). Comparing
-          # the world-space face normal to the ray direction is robust for
-          # cavity/layered walls, where naive pair-by-two mis-groups leaves.
-          facing = world_normal(face, path) % into
-          hits << { point: point, path: path, facing: facing }
+          # Depth of the face plane measured from the glue plane into the
+          # wall (all face vertices are coplanar; the first will do).
+          d = origin.vector_to(face.vertices.first.position) % into
+          next unless d > -margin && d <= max_depth
+
+          # 2D overlap: the face's extent along the opening's in-plane axes
+          # must overlap the opening rectangle [0,w] × [0,h].
+          xs = face.vertices.map { |v| origin.vector_to(v.position) % xaxis }
+          ys = face.vertices.map { |v| origin.vector_to(v.position) % yaxis }
+          next unless xs.min < w - margin && xs.max > margin &&
+                      ys.min < h - margin && ys.max > margin
+
+          [face, d]
         end
-
-        pair_layers(hits)
+        found.sort_by { |(_f, d)| d }
       end
 
-      # Pairs each entering face with the next exiting face into solid
-      # layers: [front_pt, front_path, back_pt, back_path].
-      def pair_layers(hits)
-        layers = []
-        i = 0
-        while i < hits.length
-          unless hits[i][:facing] < 0 # not an entry face; skip
-            i += 1
-            next
-          end
-
-          j = i + 1
-          j += 1 while j < hits.length && hits[j][:facing] < 0 # next exit
-          break if j >= hits.length
-
-          layers << [hits[i][:point], hits[i][:path], hits[j][:point], hits[j][:path]]
-          i = j + 1
-        end
-        layers
+      # Consecutive depth-sorted boundary faces bound one slab each:
+      # n faces → n-1 slabs. (A plain wall: front+back → 1 slab. A block
+      # with internal partitions: every gap gets punched and lined, so the
+      # opening reads as a continuous lined tunnel.)
+      def pair_faces(faces)
+        faces.each_cons(2).to_a
       end
 
-      # World-space normal of a face given its raytest path (container
-      # instances precede the face). Rigid container transforms only, which
-      # is the norm for walls.
-      def world_normal(face, path)
-        tr = Geom::Transformation.new
-        path[0...-1].each do |e|
-          tr *= e.transformation if e.respond_to?(:transformation)
-        end
-        face.normal.transform(tr).normalize
-      end
+      # --------------------------------------------------------- cut a slab
 
-      # --------------------------------------------------------- cut a layer
-
-      # Cuts the opening through one solid layer. Returns the heal record
-      # for that layer, or nil if it could not be cut.
-      def cut_layer(model, layer, corners, normal)
-        front_pt, front_path, back_pt, _back_path = layer
-        ents, tr, container_ids = resolve_container(model, front_path)
-        return nil unless ents
-
-        # Project the glue-plane opening onto the layer's front and back
-        # face planes (both perpendicular to the normal for a flat wall).
-        front_w = project(corners, normal, front_pt)
-        back_w  = project(corners, normal, back_pt)
-
-        material = wall_material(front_path.last)
-
+      # Punches the opening through the two boundary planes of one slab and
+      # lines the hole with reveal faces. Returns the heal record.
+      def cut_slab(ents, tr, ids, front_face, d0, d1, corners, normal)
+        material = wall_material(front_face)
+        front_w = project_depth(corners, normal, d0)
+        back_w  = project_depth(corners, normal, d1)
         ti = tr.inverse
         front_l = front_w.map { |p| p.transform(ti) }
         back_l  = back_w.map  { |p| p.transform(ti) }
@@ -226,7 +239,7 @@ module Kopji
         add_reveals(ents, front_l, back_l, material)
 
         {
-          'container' => container_ids,
+          'container' => ids,
           'front'     => front_w.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] },
           'back'      => back_w.map  { |p| [p.x.to_f, p.y.to_f, p.z.to_f] },
           'material'  => material&.name
@@ -234,10 +247,27 @@ module Kopji
       end
 
       # Splits the coplanar wall face with +quad+ and erases the interior,
-      # leaving a hole bounded by the quad edges.
+      # leaving a hole bounded by the quad edges. Safety: only erase when
+      # the face we got back is quad-sized — erasing a merged/outer face
+      # would remove the wall itself.
       def punch(ents, quad)
         face = ents.add_face(quad)
-        face&.erase!
+        return unless face
+
+        expected = quad_area(quad)
+        if (face.area - expected).abs <= expected * 0.01
+          face.erase!
+        else
+          puts '[ParaFrame] punch: face area mismatch — left scribe lines ' \
+               'instead of erasing'
+        end
+      end
+
+      # Area of a planar quad (two triangles).
+      def quad_area(quad)
+        a = (quad[1] - quad[0]).cross(quad[3] - quad[0]).length / 2.0
+        b = (quad[1] - quad[2]).cross(quad[3] - quad[2]).length / 2.0
+        a + b
       end
 
       # Adds the four reveal (jamb/head/sill) faces connecting the front
@@ -256,7 +286,7 @@ module Kopji
         end
       end
 
-      # -------------------------------------------------------- heal a layer
+      # -------------------------------------------------------- heal a slab
 
       def heal_layer(model, layer)
         ents, tr = resolve_container_by_ids(model, layer['container'])
@@ -267,7 +297,7 @@ module Kopji
         back  = layer['back'].map  { |a| Geom::Point3d.new(*a).transform(ti) }
         material = model.materials[layer['material']] if layer['material']
 
-        # Delete the four reveal faces, then refill the front and back holes.
+        # Delete the four reveal faces, then refill the two openings.
         4.times do |k|
           quad = [front[k], front[(k + 1) % 4], back[(k + 1) % 4], back[k]]
           f = find_face(ents, quad)
@@ -283,24 +313,6 @@ module Kopji
       end
 
       # ----------------------------------------------------- container paths
-
-      # Resolves a raytest path to the drawing context to cut in: the
-      # entities collection, its local-to-world transform, and the
-      # persistent-id list of the container instances (for healing later).
-      def resolve_container(model, path)
-        instances = path[0...-1].select do |e|
-          e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
-        end
-        tr = Geom::Transformation.new
-        ents = model.entities
-        ids = []
-        instances.each do |inst|
-          tr *= inst.transformation
-          ents = inst.definition.entities
-          ids << inst.persistent_id
-        end
-        [ents, tr, ids]
-      end
 
       # Rebuilds [entities, transform] from a stored persistent-id list.
       def resolve_container_by_ids(model, ids)
@@ -335,21 +347,6 @@ module Kopji
       end
 
       # ------------------------------------------------------------- helpers
-
-      def centroid(points)
-        n = points.length.to_f
-        Geom::Point3d.new(points.sum(&:x) / n, points.sum(&:y) / n,
-                          points.sum(&:z) / n)
-      end
-
-      # Projects each point onto the plane through +plane_pt+ with the given
-      # normal, moving along the normal (opening axis).
-      def project(points, normal, plane_pt)
-        points.map do |p|
-          d = (p - plane_pt) % normal
-          p.offset(normal, -d)
-        end
-      end
 
       def wall_material(face)
         return nil unless face.is_a?(Sketchup::Face)
