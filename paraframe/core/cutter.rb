@@ -290,13 +290,24 @@ module Kopji
         face = safe_add_face(ents, quad)
         return unless face
 
-        expected = quad_area(quad)
-        if (face.area - expected).abs <= expected * 0.01
+        # add_face usually returns the small inner opening, but sometimes
+        # the surrounding wall face instead. Erase the opening-sized face —
+        # never the big one — so we make a hole without deleting the wall.
+        if opening_sized?(face, quad)
           face.erase!
         else
-          puts '[ParaFrame] punch: face area mismatch — left scribe lines ' \
-               'instead of erasing'
+          inner = face.edges.flat_map(&:faces).uniq
+                      .find { |f| f != face && opening_sized?(f, quad) }
+          inner&.erase!
         end
+      end
+
+      # True when +face+'s area is within 5% of the opening quad's area.
+      def opening_sized?(face, quad)
+        return false unless face&.valid?
+
+        expected = quad_area(quad)
+        (face.area - expected).abs <= expected * 0.05
       end
 
       # Area of a planar quad (two triangles).
@@ -347,6 +358,7 @@ module Kopji
           reveals += 1
         end
         filled = 0
+        merged = 0
         [front, back].each do |quad|
           face = safe_add_face(ents, quad)
           next unless face
@@ -356,31 +368,20 @@ module Kopji
             face.material = material
             face.back_material = material
           end
+          # Dissolve the patch outline using THIS face's own boundary edges
+          # (no coordinate lookup — that drifted past tolerance and merged
+          # nothing). Erasing the edges that separate the patch from the
+          # coplanar wall merges them into one clean face.
+          boundary = face.edges.select do |e|
+            fs = e.faces
+            fs.length == 2 && fs[0].normal.parallel?(fs[1].normal)
+          end
+          merged += boundary.length
+          ents.erase_entities(boundary) unless boundary.empty?
         end
-        # Dissolve the opening outline so the patch merges into the wall,
-        # and remove the reveals' now-faceless corner edges.
-        dissolved = merge_quad_boundary(ents, front) + merge_quad_boundary(ents, back)
         removed = remove_faceless(ents, front + back)
         puts "[ParaFrame] heal layer: reveals #{reveals}/4, refilled " \
-             "#{filled}/2, outline merged #{dissolved}, stray edges #{removed}"
-      end
-
-      # Erases the four edges of +quad+ that separate two coplanar faces
-      # (the refilled patch and the surrounding wall), merging them into
-      # one face. Returns how many were dissolved.
-      def merge_quad_boundary(ents, quad)
-        count = 0
-        4.times do |k|
-          edge = find_edge(ents, quad[k], quad[(k + 1) % 4])
-          next unless edge&.valid?
-
-          faces = edge.faces
-          next unless faces.length == 2 && faces[0].normal.parallel?(faces[1].normal)
-
-          edge.erase!
-          count += 1
-        end
-        count
+             "#{filled}/2, outline merged #{merged}, stray edges #{removed}"
       end
 
       # Removes faceless edges (leftover reveal corners) whose endpoints are
@@ -397,16 +398,6 @@ module Kopji
 
       def near_any?(point, corners)
         corners.any? { |c| coincident?(point, c) }
-      end
-
-      # Finds an edge between two points (either direction), or nil.
-      def find_edge(ents, a, b)
-        ents.grep(Sketchup::Edge).find do |e|
-          next false unless e.valid?
-
-          (coincident?(e.start.position, a) && coincident?(e.end.position, b)) ||
-            (coincident?(e.start.position, b) && coincident?(e.end.position, a))
-        end
       end
 
       # ----------------------------------------------------- container paths
