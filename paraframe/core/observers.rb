@@ -185,6 +185,7 @@ module Kopji
             return
           end
 
+          puts "[ParaFrame] onElementRemoved matched ##{entity_id}"
           queue_heal(model, entity_id, st, 'onElementRemoved')
         end
 

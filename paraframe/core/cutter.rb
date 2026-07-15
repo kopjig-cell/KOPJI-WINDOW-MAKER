@@ -357,37 +357,56 @@ module Kopji
             face.back_material = material
           end
         end
-        cleanup_scars(ents, front, back)
-        puts "[ParaFrame] heal layer: reveals erased #{reveals}/4, " \
-             "openings refilled #{filled}/2"
+        # Dissolve the opening outline so the patch merges into the wall,
+        # and remove the reveals' now-faceless corner edges.
+        dissolved = merge_quad_boundary(ents, front) + merge_quad_boundary(ents, back)
+        removed = remove_faceless(ents, front + back)
+        puts "[ParaFrame] heal layer: reveals #{reveals}/4, refilled " \
+             "#{filled}/2, outline merged #{dissolved}, stray edges #{removed}"
       end
 
-      # After refilling, the opening's outline is still scribed on the wall
-      # (the refilled face is fenced off by the old hole edges) and the
-      # reveals' corner edges float faceless. Erase both kinds so the wall
-      # face merges back to a single clean face.
-      def cleanup_scars(ents, front, back)
-        box = Geom::BoundingBox.new
-        (front + back).each { |p| box.add(p) }
-        tol = EPS * 10
-        scars = ents.grep(Sketchup::Edge).select do |e|
-          next false unless e.valid?
-          next false unless box_contains?(box, e.start.position, tol) &&
-                            box_contains?(box, e.end.position, tol)
+      # Erases the four edges of +quad+ that separate two coplanar faces
+      # (the refilled patch and the surrounding wall), merging them into
+      # one face. Returns how many were dissolved.
+      def merge_quad_boundary(ents, quad)
+        count = 0
+        4.times do |k|
+          edge = find_edge(ents, quad[k], quad[(k + 1) % 4])
+          next unless edge&.valid?
 
-          faces = e.faces
-          # Faceless leftovers, or an edge splitting two coplanar faces —
-          # erasing the latter merges the refill into the wall face.
-          faces.empty? ||
-            (faces.length == 2 && faces[0].normal.parallel?(faces[1].normal))
+          faces = edge.faces
+          next unless faces.length == 2 && faces[0].normal.parallel?(faces[1].normal)
+
+          edge.erase!
+          count += 1
         end
-        ents.erase_entities(scars) unless scars.empty?
+        count
       end
 
-      def box_contains?(box, point, tol)
-        point.x >= box.min.x - tol && point.x <= box.max.x + tol &&
-          point.y >= box.min.y - tol && point.y <= box.max.y + tol &&
-          point.z >= box.min.z - tol && point.z <= box.max.z + tol
+      # Removes faceless edges (leftover reveal corners) whose endpoints are
+      # among the opening corners. Returns how many were removed.
+      def remove_faceless(ents, corners)
+        stray = ents.grep(Sketchup::Edge).select do |e|
+          e.valid? && e.faces.empty? &&
+            near_any?(e.start.position, corners) &&
+            near_any?(e.end.position, corners)
+        end
+        ents.erase_entities(stray) unless stray.empty?
+        stray.length
+      end
+
+      def near_any?(point, corners)
+        corners.any? { |c| coincident?(point, c) }
+      end
+
+      # Finds an edge between two points (either direction), or nil.
+      def find_edge(ents, a, b)
+        ents.grep(Sketchup::Edge).find do |e|
+          next false unless e.valid?
+
+          (coincident?(e.start.position, a) && coincident?(e.end.position, b)) ||
+            (coincident?(e.start.position, b) && coincident?(e.end.position, a))
+        end
       end
 
       # ----------------------------------------------------- container paths
